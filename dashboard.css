@@ -351,6 +351,7 @@ textarea:focus, input[type=text]:focus {
 .status-pill.empty { background: var(--warn-bg); color: var(--warn-text); border-color: var(--warn-border); }
 .status-pill.same { background: var(--warn-bg); color: var(--warn-text); border-color: var(--warn-border); }
 .status-pill.same.low-conf { background: var(--hover-veil); color: var(--muted); border-color: var(--border); }
+.status-pill.suspicious { background: var(--bad-bg); color: var(--bad-text); border-color: var(--bad-border); cursor: help; }
 .status-pill.ok { background: var(--ok-bg); color: var(--ok-text); border-color: var(--ok-border); }
 
 .verify-one-btn { font-size: 10.5px; padding: 5px 8px; }

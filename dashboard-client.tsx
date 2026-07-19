@@ -3,12 +3,13 @@ import { createRoot } from "react-dom/client";
 
 // ---------- Types mirroring the server's /api/data payload ----------
 
-type CellStatus = "ok" | "missing" | "empty" | "same";
+type CellStatus = "ok" | "missing" | "empty" | "same" | "suspicious";
 
 interface Cell {
   value: string | string[] | null;
   status: CellStatus;
   confidence?: "low" | "high";
+  reason?: string; // judge's verdict for "suspicious" cells
 }
 
 interface KeyRow {
@@ -39,10 +40,15 @@ interface Data {
 
 interface AutoFixStatus {
   enabled: boolean;
-  running: boolean;
+  verifyEnabled: boolean;
+  phase: "idle" | "translating" | "verifying";
   currentKey: string | null;
   fixedThisPass: number;
   remainingKeys: number;
+  verifiedThisPass: number;
+  confirmedThisPass: number;
+  flaggedThisPass: number;
+  remainingPairs: number;
   lastScanAt: string | null;
 }
 
@@ -108,7 +114,7 @@ function fromDisplayValue(text: string, isArray: boolean): string | string[] {
 function overallStatus(row: KeyRow): "ok" | "warn" | "bad" {
   const vals = Object.values(row.values);
   if (vals.some((v) => v.status === "missing" || v.status === "empty")) return "bad";
-  if (vals.some((v) => v.status === "same")) return "warn";
+  if (vals.some((v) => v.status === "same" || v.status === "suspicious")) return "warn";
   return "ok";
 }
 
@@ -116,6 +122,7 @@ function statusLabel(status: CellStatus, confidence?: string): string {
   if (status === "missing") return "missing";
   if (status === "empty") return "empty";
   if (status === "same") return confidence === "low" ? "same (likely cognate)" : "same (check it)";
+  if (status === "suspicious") return "suspicious (AI)";
   return "ok";
 }
 
@@ -153,6 +160,7 @@ function Topbar(props: {
   overwrite: boolean;
   onOverwrite: (v: boolean) => void;
   onToggleAutoFix: (enabled: boolean) => void;
+  onToggleAutoVerify: (enabled: boolean) => void;
   onOpenCodeUsage: () => void;
   onRefresh: () => void;
 }) {
@@ -175,25 +183,33 @@ function Topbar(props: {
   const pct = totalCells ? Math.round((okCells / totalCells) * 1000) / 10 : 0;
 
   let pillClass = "autofix-pill";
-  let pillContent: React.ReactNode = "Auto-fix: loading...";
+  let pillContent: React.ReactNode = "Auto: loading...";
   if (autoFix) {
-    if (!autoFix.enabled) {
-      pillClass += " paused";
-      pillContent = "Auto-fix: paused";
-    } else if (autoFix.running) {
+    if (autoFix.phase === "translating") {
       pillClass += " active";
       pillContent = (
         <>
           <span className="pulse-dot" />
-          {`Auto-fix: translating ${autoFix.currentKey} (${autoFix.remainingKeys} keys left)`}
+          {`Translating ${autoFix.currentKey} (${autoFix.remainingKeys} keys left)`}
         </>
       );
-    } else if (autoFix.remainingKeys > 0) {
+    } else if (autoFix.phase === "verifying") {
       pillClass += " active";
-      pillContent = `Auto-fix: ${autoFix.remainingKeys} keys pending`;
+      pillContent = (
+        <>
+          <span className="pulse-dot" />
+          {`Judging ${autoFix.currentKey} (${autoFix.remainingPairs} left · ${autoFix.confirmedThisPass} ok / ${autoFix.flaggedThisPass} suspicious)`}
+        </>
+      );
+    } else if (!autoFix.enabled && !autoFix.verifyEnabled) {
+      pillClass += " paused";
+      pillContent = "Auto: paused";
+    } else if (autoFix.remainingKeys > 0 || autoFix.remainingPairs > 0) {
+      pillClass += " active";
+      pillContent = `Auto: ${autoFix.remainingKeys + autoFix.remainingPairs} items pending`;
     } else {
       pillClass += " active";
-      pillContent = "Auto-fix: all caught up";
+      pillContent = "Auto: all caught up";
     }
   }
 
@@ -233,6 +249,13 @@ function Topbar(props: {
           <span className="track" />
         </span>
         Auto-fix
+      </label>
+      <label className="switch-label" title="Background AI judging of cells identical to the source: cognates get confirmed, likely forgotten translations get flagged">
+        <span className="switch">
+          <input type="checkbox" checked={autoFix?.verifyEnabled ?? true} onChange={(e) => props.onToggleAutoVerify(e.target.checked)} />
+          <span className="track" />
+        </span>
+        Auto-verify
       </label>
       <ThemeToggle />
       <button className="btn-icon" onClick={props.onOpenCodeUsage}>
@@ -471,7 +494,7 @@ function Detail(props: {
               defaultValue={toDisplayValue(cell.value)}
               onBlur={(e) => props.onSave(props.currentKey!, code, fromDisplayValue(e.target.value, isArrayKey))}
             />
-            <div className={pillClass}><span className="pill-dot" />{statusLabel(cell.status, cell.confidence)}</div>
+            <div className={pillClass} title={cell.reason}><span className="pill-dot" />{statusLabel(cell.status, cell.confidence)}</div>
             <button
               disabled={busyLocale === code}
               onClick={async () => {
@@ -481,7 +504,7 @@ function Detail(props: {
             >
               Translate
             </button>
-            {cell.status === "same" ? (
+            {cell.status === "same" || cell.status === "suspicious" ? (
               <div className="lang-actions">
                 <button
                   className="verify-one-btn"
@@ -626,8 +649,9 @@ function App() {
     events.onmessage = (e) => {
       const status: AutoFixStatus = JSON.parse(e.data);
       setAutoFix(status);
-      if (status.fixedThisPass !== lastFixCount.current) {
-        lastFixCount.current = status.fixedThisPass;
+      const progress = status.fixedThisPass + status.verifiedThisPass;
+      if (progress !== lastFixCount.current) {
+        lastFixCount.current = progress;
         loadData();
       }
     };
@@ -706,6 +730,7 @@ function App() {
         overwrite={overwrite}
         onOverwrite={setOverwrite}
         onToggleAutoFix={(enabled) => postJson("/api/auto-fix", { enabled })}
+        onToggleAutoVerify={(enabled) => postJson("/api/auto-fix", { verifyEnabled: enabled })}
         onOpenCodeUsage={() => setCodeUsageOpen(true)}
         onRefresh={loadData}
       />

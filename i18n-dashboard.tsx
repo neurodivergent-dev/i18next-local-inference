@@ -15,10 +15,11 @@ const DEFAULT_CONFIG = {
   srcDir: "", // empty = "src" if present, else project root
   sourceLocale: "en",
   ollamaUrl: "http://localhost:11434/api/generate",
-  model: "gemma4:26b", // translation model (system prompt is sent per-request, no custom model needed)
-  judgeModel: "gemma4:26b", // decides whether a "same" flag is a real cognate or a forgotten translation
+  model: "gemma4:12b", // translation workhorse — high volume, schema-constrained, a fast model does fine
+  judgeModel: "gemma4:26b", // judgment calls (cognate vs forgotten translation) — worth the smarter, slower model
   port: 5960,
   autoFixPollMs: 15000,
+  autoVerify: true, // background judging of "same" cells: confirm real cognates, flag suspicious ones
   appContext: "You are translating the UI strings of an application.", // app description injected into prompts — customize per project
   ignoreSameKeyPrefixes: [] as string[], // keys exempt from the "same" check (e.g. language names: settings.english)
   ignoreSameValues: ["OK", "AI", "API"] as string[], // values expected to stay identical in every language (brands/abbreviations)
@@ -136,6 +137,7 @@ const SRC_DIR = CONFIG.srcDir
 const STATE_DIR = join(PROJECT_ROOT, ".i18n-dash");
 const CONFIRMED_SAME_PATH = join(STATE_DIR, "confirmed-same.json");
 const TRANSLATION_CACHE_PATH = join(STATE_DIR, "translation-cache.json");
+const FLAGGED_SUSPICIOUS_PATH = join(STATE_DIR, "flagged-suspicious.json");
 // Older versions wrote under scripts/ (and the code read a dot-prefixed name while the committed
 // file had none) — both legacy names are still read; writes always go to the new location.
 const LEGACY_STATE_PATHS: Record<string, string[]> = {
@@ -466,6 +468,35 @@ function markConfirmedSame(key: string, locale: string) {
   if (!store[key]) store[key] = [];
   if (!store[key].includes(locale)) store[key].push(locale);
   saveConfirmedSame(store);
+  unflagSuspicious(key, locale); // a confirmation overrides an earlier "suspicious" verdict
+}
+
+// ---------- AI-flagged suspicious "same" cells (judged as probably-forgotten translations) ----------
+// key -> locale -> the judge's one-sentence reason. Persisted so a judged pair is never re-judged;
+// the flag only applies while the cell still equals the source text (stale flags are ignored on read).
+function loadFlaggedSuspicious(): Record<string, Record<string, string>> {
+  return loadStateFile(FLAGGED_SUSPICIOUS_PATH) ?? {};
+}
+
+function saveFlaggedSuspicious(data: Record<string, Record<string, string>>) {
+  ensureStateDir();
+  writeFileSync(FLAGGED_SUSPICIOUS_PATH, JSON.stringify(data, null, 2) + "\n", "utf-8");
+}
+
+function markFlaggedSuspicious(key: string, locale: string, reason: string) {
+  const store = loadFlaggedSuspicious();
+  if (!store[key]) store[key] = {};
+  store[key][locale] = reason;
+  saveFlaggedSuspicious(store);
+}
+
+function unflagSuspicious(key: string, locale: string) {
+  const store = loadFlaggedSuspicious();
+  if (store[key] && locale in store[key]) {
+    delete store[key][locale];
+    if (Object.keys(store[key]).length === 0) delete store[key];
+    saveFlaggedSuspicious(store);
+  }
 }
 
 // ---------- Translation cache for keys sharing the same source text ----------
@@ -491,29 +522,34 @@ function buildData() {
   const enKeys = flattenKeys(en);
   const sectionsMap = new Map<string, any[]>();
   const confirmedSame = loadConfirmedSame();
+  const flaggedSuspicious = loadFlaggedSuspicious();
 
   for (const keyPath of enKeys) {
     const section = keyPath.split(".")[0];
     const enValue = getPath(en, keyPath);
     if (!isTranslatableSource(enValue)) continue; // keys that are not string/string[] (e.g. numbers) are hidden from the dashboard
     const isArrayValue = Array.isArray(enValue);
-    const values: Record<string, { value: any; status: string; confidence?: string }> = {};
+    const values: Record<string, { value: any; status: string; confidence?: string; reason?: string }> = {};
     for (const c of codes) {
       if (c === SOURCE_LOCALE) continue;
       const v = getPath(localeData[c], keyPath);
       let status = "ok";
       let confidence: string | undefined;
+      let reason: string | undefined;
       if (isGap(enValue, v)) {
         status = v === undefined ? "missing" : "empty";
       } else if (isArrayValue ? JSON.stringify(v) === JSON.stringify(enValue) : v === enValue) {
         if (isConfirmedSame(confirmedSame, keyPath, c) || (!isArrayValue && isIgnoredSame(keyPath, enValue as string))) {
           status = "ok";
+        } else if (flaggedSuspicious[keyPath]?.[c] !== undefined) {
+          status = "suspicious";
+          reason = flaggedSuspicious[keyPath][c];
         } else {
           status = "same";
           confidence = !isArrayValue && wordCount(enValue as string) >= 3 ? "high" : isArrayValue ? "high" : "low";
         }
       }
-      values[c] = { value: v ?? null, status, confidence };
+      values[c] = { value: v ?? null, status, confidence, reason };
     }
     if (!sectionsMap.has(section)) sectionsMap.set(section, []);
     sectionsMap.get(section)!.push({ key: keyPath, en: enValue, values });
@@ -649,11 +685,14 @@ async function translateKey(
 }
 
 // ---------- Judge the "same" flag with AI: real cognate/term, or a forgotten translation? ----------
+// No maxLength on reason: Ollama's schema grammar hard-truncates strings mid-word (sometimes
+// after a few characters) when a length cap is present — brevity is asked for in the prompt
+// and enforced by clamping server-side instead.
 const JUDGE_SCHEMA = {
   type: "object",
   properties: {
     plausible: { type: "boolean" },
-    reason: { type: "string", maxLength: 120 },
+    reason: { type: "string" },
   },
   required: ["plausible", "reason"],
 };
@@ -673,7 +712,8 @@ The value stored as its ${lang} (${locale}) translation is LITERALLY IDENTICAL: 
 
 Is this REALLY a correct/expected translation in ${lang} (e.g. a shared-root word/cognate, brand name, technical term, number, abbreviation)? Or is it most likely a forgotten translation left in the source language (${srcLang})?
 
-If plausible=true, give a short justification (e.g. which cognate/term); if false, explain in one sentence why it is suspicious.`;
+If plausible=true, give a short justification (e.g. which cognate/term); if false, explain in one sentence why it is suspicious.
+The reason must be ONE short sentence on a single line — no line breaks, no lists, no markdown (the schema grammar cuts the string at the first line break).`;
 
     const res = await fetch(OLLAMA_URL, {
       method: "POST",
@@ -691,23 +731,33 @@ If plausible=true, give a short justification (e.g. which cognate/term); if fals
     const data = await res.json();
     if (typeof data.response !== "string") return null;
     const parsed = JSON.parse(data.response);
-    return { plausible: !!parsed.plausible, reason: String(parsed.reason ?? "") };
+    const reason = String(parsed.reason ?? "");
+    return { plausible: !!parsed.plausible, reason: reason.length > 240 ? reason.slice(0, 237) + "..." : reason };
   } catch {
     return null;
   }
 }
 
-// ---------- Background auto-fix: fills "missing"/"empty" cells without the user clicking anything ----------
+// ---------- Background loop: fills "missing"/"empty" cells, then judges "same" cells — no clicks needed ----------
+// Two sequential phases per pass (never concurrent, to keep the local GPU sane):
+//   translating — gap cells are translated by the fast workhorse model
+//   verifying   — unjudged "same" cells go to the judge model; real cognates are confirmed (green),
+//                 probable forgotten translations are flagged "suspicious" for a human to resolve
 function sleep(ms: number) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 const autoFixStatus = {
-  enabled: true,
-  running: false,
+  enabled: true, // gap translation phase
+  verifyEnabled: CONFIG.autoVerify, // "same"-cell judging phase
+  phase: "idle" as "idle" | "translating" | "verifying",
   currentKey: null as string | null,
   fixedThisPass: 0,
   remainingKeys: 0,
+  verifiedThisPass: 0,
+  confirmedThisPass: 0,
+  flaggedThisPass: 0,
+  remainingPairs: 0,
   lastScanAt: null as string | null,
 };
 
@@ -717,67 +767,117 @@ function broadcastAutoFix() {
   for (const send of autoFixListeners) send(payload);
 }
 
+async function autoFixTranslatePass() {
+  const en = loadLocale(SOURCE_LOCALE);
+  const enKeys = flattenKeys(en);
+  const allCodes = listLocaleCodes().filter((c) => c !== SOURCE_LOCALE);
+
+  const gaps: string[] = [];
+  for (const key of enKeys) {
+    const sourceValue = getPath(en, key);
+    if (!isTranslatableSource(sourceValue)) continue;
+    const hasGap = allCodes.some((c) => isGap(sourceValue, getPath(loadLocale(c), key)));
+    if (hasGap) gaps.push(key);
+  }
+
+  autoFixStatus.remainingKeys = gaps.length;
+  autoFixStatus.fixedThisPass = 0;
+  broadcastAutoFix();
+
+  for (const key of gaps) {
+    if (!autoFixStatus.enabled) break; // let the user stop mid-pass
+
+    const sourceValue = getPath(en, key);
+    if (!isTranslatableSource(sourceValue)) continue;
+    const localeCache: Record<string, any> = {};
+    const targets: string[] = [];
+    for (const c of allCodes) {
+      localeCache[c] = loadLocale(c);
+      const v = getPath(localeCache[c], key);
+      if (isGap(sourceValue, v)) targets.push(c);
+    }
+    if (targets.length === 0) continue;
+
+    autoFixStatus.phase = "translating";
+    autoFixStatus.currentKey = key;
+    broadcastAutoFix();
+
+    const translations = await translateKey(sourceValue, key, targets);
+    if (translations) {
+      for (const c of targets) {
+        const accepted = acceptTranslatedValue(sourceValue, translations[c]);
+        if (accepted === undefined) continue;
+        setPath(localeCache[c], key, accepted);
+        saveLocale(c, localeCache[c]);
+      }
+    }
+    autoFixStatus.fixedThisPass++;
+    autoFixStatus.remainingKeys--;
+    broadcastAutoFix();
+  }
+}
+
+async function autoVerifyPass() {
+  const en = loadLocale(SOURCE_LOCALE);
+  const enKeys = flattenKeys(en);
+  const allCodes = listLocaleCodes().filter((c) => c !== SOURCE_LOCALE);
+  const confirmedSame = loadConfirmedSame();
+  const flagged = loadFlaggedSuspicious();
+
+  // Unjudged "same" pairs: identical to source, not confirmed, not ignored, not already flagged
+  const pairs: { key: string; locale: string; sourceText: string }[] = [];
+  for (const key of enKeys) {
+    const sourceText = getPath(en, key);
+    if (typeof sourceText !== "string") continue;
+    if (isIgnoredSame(key, sourceText)) continue;
+    for (const c of allCodes) {
+      if (isConfirmedSame(confirmedSame, key, c)) continue;
+      if (flagged[key]?.[c] !== undefined) continue;
+      if (getPath(loadLocale(c), key) === sourceText) pairs.push({ key, locale: c, sourceText });
+    }
+  }
+
+  autoFixStatus.remainingPairs = pairs.length;
+  autoFixStatus.verifiedThisPass = 0;
+  autoFixStatus.confirmedThisPass = 0;
+  autoFixStatus.flaggedThisPass = 0;
+  broadcastAutoFix();
+
+  for (const p of pairs) {
+    if (!autoFixStatus.verifyEnabled) break; // let the user stop mid-pass
+
+    autoFixStatus.phase = "verifying";
+    autoFixStatus.currentKey = `${p.key} → ${p.locale}`;
+    broadcastAutoFix();
+
+    const verdict = await judgeSameTranslation(p.sourceText, p.locale, p.key);
+    if (verdict) {
+      if (verdict.plausible) {
+        markConfirmedSame(p.key, p.locale);
+        autoFixStatus.confirmedThisPass++;
+      } else {
+        markFlaggedSuspicious(p.key, p.locale, verdict.reason);
+        autoFixStatus.flaggedThisPass++;
+      }
+    }
+    // verdict === null (Ollama unreachable): skip silently, the next pass retries
+    autoFixStatus.verifiedThisPass++;
+    autoFixStatus.remainingPairs--;
+    broadcastAutoFix();
+  }
+}
+
 async function autoFixLoop() {
   while (true) {
-    if (!autoFixStatus.enabled) {
-      await sleep(AUTO_FIX_POLL_MS);
-      continue;
-    }
     try {
-      const en = loadLocale(SOURCE_LOCALE);
-      const enKeys = flattenKeys(en);
-      const allCodes = listLocaleCodes().filter((c) => c !== SOURCE_LOCALE);
-
-      const gaps: string[] = [];
-      for (const key of enKeys) {
-        const sourceValue = getPath(en, key);
-        if (!isTranslatableSource(sourceValue)) continue;
-        const hasGap = allCodes.some((c) => isGap(sourceValue, getPath(loadLocale(c), key)));
-        if (hasGap) gaps.push(key);
-      }
-
-      autoFixStatus.remainingKeys = gaps.length;
-      autoFixStatus.fixedThisPass = 0;
-      broadcastAutoFix();
-
-      for (const key of gaps) {
-        if (!autoFixStatus.enabled) break; // let the user stop mid-pass
-
-        const sourceValue = getPath(en, key);
-        if (!isTranslatableSource(sourceValue)) continue;
-        const localeCache: Record<string, any> = {};
-        const targets: string[] = [];
-        for (const c of allCodes) {
-          localeCache[c] = loadLocale(c);
-          const v = getPath(localeCache[c], key);
-          if (isGap(sourceValue, v)) targets.push(c);
-        }
-        if (targets.length === 0) continue;
-
-        autoFixStatus.running = true;
-        autoFixStatus.currentKey = key;
-        broadcastAutoFix();
-
-        const translations = await translateKey(sourceValue, key, targets);
-        if (translations) {
-          for (const c of targets) {
-            const accepted = acceptTranslatedValue(sourceValue, translations[c]);
-            if (accepted === undefined) continue;
-            setPath(localeCache[c], key, accepted);
-            saveLocale(c, localeCache[c]);
-          }
-        }
-        autoFixStatus.fixedThisPass++;
-        autoFixStatus.remainingKeys--;
-        broadcastAutoFix();
-      }
-
-      autoFixStatus.running = false;
+      if (autoFixStatus.enabled) await autoFixTranslatePass();
+      if (autoFixStatus.verifyEnabled) await autoVerifyPass();
+      autoFixStatus.phase = "idle";
       autoFixStatus.currentKey = null;
       autoFixStatus.lastScanAt = new Date().toISOString();
       broadcastAutoFix();
     } catch (err) {
-      console.error("❌ Auto-fix pass failed (continuing):", err);
+      console.error("❌ Background pass failed (continuing):", err);
     }
     await sleep(AUTO_FIX_POLL_MS);
   }
@@ -944,6 +1044,7 @@ async function handleVerifySame(req: Request): Promise<Response> {
   const verdict = await judgeSameTranslation(sourceText, locale, key);
   if (!verdict) return Response.json({ error: "AI verification failed (is the model running?)" }, { status: 502 });
   if (verdict.plausible) markConfirmedSame(key, locale);
+  else markFlaggedSuspicious(key, locale, verdict.reason);
   return Response.json(verdict);
 }
 
@@ -966,13 +1067,16 @@ function streamVerifySection(section: string): Response {
         const keys = flattenKeys(en).filter((k) => k.split(".")[0] === section);
         const allCodes = listLocaleCodes().filter((c) => c !== SOURCE_LOCALE);
         const confirmedSame = loadConfirmedSame();
+        const alreadyFlagged = loadFlaggedSuspicious();
 
         const pairs: { key: string; locale: string; sourceText: string }[] = [];
         for (const key of keys) {
           const sourceText = getPath(en, key);
           if (typeof sourceText !== "string") continue;
+          if (isIgnoredSame(key, sourceText)) continue;
           for (const c of allCodes) {
             if (isConfirmedSame(confirmedSame, key, c)) continue;
+            if (alreadyFlagged[key]?.[c] !== undefined) continue;
             const v = getPath(loadLocale(c), key);
             if (v === sourceText) pairs.push({ key, locale: c, sourceText });
           }
@@ -987,6 +1091,7 @@ function streamVerifySection(section: string): Response {
             markConfirmedSame(p.key, p.locale);
             confirmed++;
           } else {
+            if (verdict) markFlaggedSuspicious(p.key, p.locale, verdict.reason);
             flagged++;
           }
           send({ type: "pair", key: p.key, locale: p.locale, verdict });
@@ -1046,7 +1151,8 @@ Bun.serve({
       }
       if (req.method === "POST" && url.pathname === "/api/auto-fix") {
         const body = await req.json();
-        autoFixStatus.enabled = !!body.enabled;
+        if ("enabled" in body) autoFixStatus.enabled = !!body.enabled;
+        if ("verifyEnabled" in body) autoFixStatus.verifyEnabled = !!body.verifyEnabled;
         broadcastAutoFix();
         return Response.json(autoFixStatus);
       }

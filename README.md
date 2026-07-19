@@ -23,7 +23,7 @@ An automated i18n management system that:
 
 > 📚 **New here? Follow the full step-by-step [TUTORIAL.md](TUTORIAL.md)** — installing Bun and Ollama, running the tool against your own project, configuration, and a dashboard usage guide.
 
-1. Install [Bun](https://bun.sh) and [Ollama](https://ollama.com), then `ollama pull gemma4:26b`
+1. Install [Bun](https://bun.sh) and [Ollama](https://ollama.com), then `ollama pull gemma4:12b` (translator) and `ollama pull gemma4:26b` (judge)
 2. Run the tool against your project (it auto-discovers the locale files):
    ```bash
    cd path/to/your-project
@@ -107,12 +107,11 @@ User → t('key') → en.json missing/empty → API call
 
 ## 🛠️ Features
 
-### ✅ Automatic Search and Fix (Auto-Fix)
+### ✅ Background Auto-Fix and Auto-Verify
 
-Clicking the **"Search"** button in the top-right corner:
-- Automatically fills missing/empty cells
-- Checks every 15 seconds
-- Completes all empty spaces without any user action
+Two background phases run continuously (each has its own toggle in the top bar):
+- **Auto-fix**: fills missing/empty cells with the fast translation model — no user action needed
+- **Auto-verify**: the judge model works through cells identical to the source; real cognates are auto-confirmed, probable forgotten translations are flagged `suspicious` with the judge's reason. Each pair is judged once and the verdict is remembered.
 
 ### ✅ Quality Control
 

@@ -3,10 +3,11 @@
   "srcDir": "src",
   "sourceLocale": "en",
   "ollamaUrl": "http://localhost:11434/api/generate",
-  "model": "gemma4:26b",
+  "model": "gemma4:12b",
   "judgeModel": "gemma4:26b",
   "port": 5960,
   "autoFixPollMs": 15000,
+  "autoVerify": true,
   "appContext": "You are translating the UI strings of a React Native (Expo) mobile education app (flashcards/quiz/AI chat).",
   "ignoreSameKeyPrefixes": [
     "settings.turkish", "settings.english", "settings.german", "settings.french", "settings.spanish",

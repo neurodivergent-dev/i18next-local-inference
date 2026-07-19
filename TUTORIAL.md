@@ -35,7 +35,8 @@ Verify with `bun --version`.
 Download Ollama from [ollama.com](https://ollama.com), make sure it's running (`ollama list` should answer), then:
 
 ```bash
-ollama pull gemma4:26b
+ollama pull gemma4:12b   # translation workhorse — high volume, fast
+ollama pull gemma4:26b   # judge — decides whether "same" cells are cognates or forgotten translations
 ```
 
 > 💡 **Low on VRAM?** The default model is large. Any model from `ollama list` works — set `model` and `judgeModel` in the config (Step 5) to a smaller one. Translation quality scales with model size, but the JSON-schema-constrained output keeps even small models well-behaved.
@@ -105,8 +106,9 @@ Without any config, the tool auto-discovers the locales directory (`src/i18n/loc
 | `srcDir` | `src` (or project root) | Where `t('key')` usages are scanned |
 | `sourceLocale` | `en` | Source language code |
 | `ollamaUrl` | `http://localhost:11434/api/generate` | Ollama endpoint |
-| `model` / `judgeModel` | `gemma4:26b` | Translation / validation models |
-| `port` / `autoFixPollMs` | `5960` / `15000` | Server port / auto-fix interval |
+| `model` / `judgeModel` | `gemma4:12b` / `gemma4:26b` | Translation workhorse / judge model |
+| `port` / `autoFixPollMs` | `5960` / `15000` | Server port / background pass interval |
+| `autoVerify` | `true` | Background judging of "same" cells (confirm cognates, flag suspicious) |
 | `appContext` | generic | App description injected into AI prompts (improves quality) |
 | `ignoreSameKeyPrefixes` | `[]` | Keys where source == target is intentional |
 | `ignoreSameValues` | `["OK", "AI", "API"]` | Values allowed to stay identical in all languages |
@@ -117,7 +119,8 @@ Without any config, the tool auto-discovers the locales directory (`src/i18n/loc
 ## Step 6 — Using the dashboard
 
 - **The table** shows every key × every target language. Cell colors mean: `missing` (key absent), `empty` (present but blank), `same` (identical to source — maybe a forgotten translation), `ok`.
-- **Auto-Fix** (top right) scans every 15 seconds and fills `missing`/`empty` cells on its own. Toggle it off if you want manual control.
+- **Auto-fix** (top right) scans every 15 seconds and fills `missing`/`empty` cells on its own. Toggle it off if you want manual control.
+- **Auto-verify** (top right) runs after each auto-fix pass: the judge model works through unjudged `same` cells in the background — real cognates turn `ok`, probable forgotten translations turn `suspicious` (hover the pill to read the judge's reason). Each pair is judged once and remembered.
 - **Per-key translate**: fill one key for all languages (or a selection) in a single AI call; optionally overwrite existing values.
 - **Per-section translate**: batch-translate an entire section with live streaming progress.
 - **AI Verify on `same` cells**: the judge model decides whether an identical string is a legitimate cognate/brand/term or a forgotten translation. You can also force-confirm — human decisions always win over the AI.
