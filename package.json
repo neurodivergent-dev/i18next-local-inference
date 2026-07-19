@@ -1,0 +1,3 @@
+"scripts": {
+  "i18n:dashboard": "bun run i18n-dashboard.tsx"
+}
