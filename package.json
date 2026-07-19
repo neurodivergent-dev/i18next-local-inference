@@ -1,3 +1,13 @@
-"scripts": {
-  "i18n:dashboard": "bun run i18n-dashboard.tsx"
+{
+  "name": "i18n-dash",
+  "version": "1.0.0",
+  "description": "Ollama destekli, tak-çalıştır i18n çeviri dashboard'u — eksik çevirileri otomatik doldurur",
+  "type": "module",
+  "bin": {
+    "i18n-dash": "./i18n-dashboard.tsx"
+  },
+  "scripts": {
+    "i18n:dashboard": "bun run i18n-dashboard.tsx"
+  },
+  "license": "Apache-2.0"
 }

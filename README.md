@@ -24,27 +24,55 @@ An automated i18n management system that:
 ### Prerequisites
 
 1. **Ollama** must be installed and running: [ollama.com](https://ollama.com)
-2. Required models must be pulled:
+2. The base model must be pulled (no custom model needed — the translation system prompt is sent per-request):
    ```bash
-   # General model (for judgment/validation)
    ollama pull gemma4:26b
-   
-   # Specialized translation model
-   ollama create i18n-translator -f scripts/i18n-translator.Modelfile
-   ollama pull i18n-translator
    ```
 
 ### Initial Setup
 
-```bash
-# Navigate to project directory
-cd C:/Users/Melih/Desktop/i18n-dash
+The tool is **project-independent**: run it inside any repo that has locale JSON files and it will find them automatically.
 
-# Start the dashboard (runs on localhost:5960)
-bun run i18n:dashboard
+```bash
+# Option A: run from inside the target project
+cd path/to/your-project
+bun run path/to/i18n-dashboard.tsx
+
+# Option B: point it at a project from anywhere
+bun run i18n-dashboard.tsx path/to/your-project
 ```
 
 Open your browser and go to **http://localhost:5960** to start using the dashboard.
+
+### Configuration (optional)
+
+Without any config, the tool auto-discovers the locales directory (`src/i18n/locales`, `locales`, `public/locales`, … or a limited-depth scan) and uses sensible defaults. To customize, create **`i18n-dash.config.json`** in the target project root (see `i18n-dash.config.example.json` for a full example):
+
+```json
+{
+  "localesDir": "src/i18n/locales",
+  "srcDir": "src",
+  "sourceLocale": "en",
+  "model": "gemma4:26b",
+  "appContext": "You are translating the UI strings of a mobile education app.",
+  "ignoreSameKeyPrefixes": ["settings.english", "home.appName"],
+  "ignoreSameValues": ["OK", "AI", "API"],
+  "dynamicPrefixes": ["explore.steps."]
+}
+```
+
+| Field | Default | Purpose |
+|---|---|---|
+| `localesDir` | auto-discover | Directory containing `en.json`, `tr.json`, … |
+| `srcDir` | `src` (or project root) | Where `t('key')` usages are scanned |
+| `sourceLocale` | `en` | Source language code |
+| `ollamaUrl` | `http://localhost:11434/api/generate` | Ollama endpoint |
+| `model` / `judgeModel` | `gemma4:26b` | Translation / validation models |
+| `port` / `autoFixPollMs` | `5960` / `15000` | Server port / auto-fix interval |
+| `appContext` | generic | App description injected into AI prompts (improves quality) |
+| `ignoreSameKeyPrefixes` | `[]` | Keys where source == target is intentional |
+| `ignoreSameValues` | `["OK", "AI", "API"]` | Values allowed to stay identical in all languages |
+| `dynamicPrefixes` | `[]` | Key prefixes used via `t(variable)` that the regex scan can't see |
 
 ---
 
@@ -106,7 +134,7 @@ The dashboard is a single HTML file with no framework:
 ```
 User → t('key') → en.json missing/empty → API call
                 ↓
-          Ollama (i18n-translator model)
+          Ollama (base model + per-request system prompt)
                 ↓
           JSON schema translation
                 ↓
@@ -149,22 +177,20 @@ Response streams in **ndjson** format.
 
 ```
 i18n-dash/
-├── i18n-dashboard.tsx      # Main application (backend + frontend)
-├── package.json             # Bun/Simple bundler configuration
-├── README.md                # This file
-├── .gitignore               # Git ignore rules
-│
-├── scripts/                 # Utilities and cache
-│   ├── i18n-confirmed-same.json
-│   ├── i18n-translation-cache.json
-│   └── i18n-translator.Modelfile  # Ollama model definition
-│
-└── src/                     # Source code (not manually edited)
-    └── i18n/
-        ├── en.json         # Source language (English)
-        ├── tr.json         # Turkish translation (may be incomplete)
-        ├── de.json         # German
-        └── ...             # Other 26+ languages
+├── i18n-dashboard.tsx              # The whole tool (backend + frontend, single file)
+├── i18n-dash.config.example.json   # Example config for target projects
+├── package.json                    # bin entry → runnable via bunx
+├── README.md                       # This file
+└── .gitignore
+
+your-project/                       # Any target repo
+├── i18n-dash.config.json           # Optional — auto-discovery covers common layouts
+├── .i18n-dash/                     # Tool state (translation cache + confirmed-same);
+│                                   #   self-gitignored, created automatically
+└── src/i18n/locales/               # (or locales/, public/locales/, …)
+    ├── en.json                     # Source language
+    ├── tr.json                     # Target languages (may be incomplete)
+    └── ...
 ```
 
 ---
@@ -174,7 +200,7 @@ i18n-dash/
 - **Source Language**: English (`en`)
 - **Target Languages**: 29 languages (Turkish, German, French, Spanish, Portuguese, Italian, etc.)
 
-See `scripts/i18n-dashboard.tsx` for the complete list of supported languages.
+Languages are derived from the `.json` files present in the locales directory — add a new `xx.json` file and it becomes a target language. `i18n-dashboard.tsx` ships native/English display names for 30 common languages; unknown codes fall back to the code itself.
 
 ---
 
@@ -251,10 +277,9 @@ ollama serve
 
 ### Cache Errors
 
-Clear cache files:
+Clear the tool's state directory (in the target project root):
 ```bash
-rm scripts/i18n-translation-cache.json
-rm scripts/i18n-confirmed-same.json
+rm -rf .i18n-dash
 ```
 
 ---

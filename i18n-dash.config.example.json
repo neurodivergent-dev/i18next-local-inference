@@ -1,0 +1,22 @@
+{
+  "localesDir": "src/i18n/locales",
+  "srcDir": "src",
+  "sourceLocale": "en",
+  "ollamaUrl": "http://localhost:11434/api/generate",
+  "model": "gemma4:26b",
+  "judgeModel": "gemma4:26b",
+  "port": 5960,
+  "autoFixPollMs": 15000,
+  "appContext": "Bir React Native (Expo) mobil eğitim uygulamasının (flashcard/quiz/AI chat) UI metinlerini çeviriyorsun.",
+  "ignoreSameKeyPrefixes": [
+    "settings.turkish", "settings.english", "settings.german", "settings.french", "settings.spanish",
+    "settings.portuguese", "settings.italian", "settings.dutch", "settings.polish", "settings.swedish",
+    "settings.danish", "settings.norwegian", "settings.finnish", "settings.czech", "settings.romanian",
+    "settings.hungarian", "settings.ukrainian", "settings.russian", "settings.greek", "settings.hebrew",
+    "settings.arabic", "settings.persian", "settings.hindi", "settings.bengali", "settings.thai",
+    "settings.vietnamese", "settings.indonesian", "settings.chinese", "settings.japanese", "settings.korean",
+    "home.appName", "flashcards.title"
+  ],
+  "ignoreSameValues": ["AI", "API", "LMS", "OK", "Mindhouse Panel", "Flashcards", "Gemini", "Groq", "Ollama"],
+  "dynamicPrefixes": ["explore.steps."]
+}

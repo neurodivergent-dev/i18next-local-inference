@@ -1,16 +1,169 @@
-import { readFileSync, writeFileSync, readdirSync, existsSync, statSync } from "fs";
-import { join } from "path";
+#!/usr/bin/env bun
+import { readFileSync, writeFileSync, readdirSync, existsSync, statSync, mkdirSync } from "fs";
+import { join, resolve } from "path";
 
-const OLLAMA_URL = "http://localhost:11434/api/generate";
-const MODEL = "i18n-translator"; // gemma4:26b üstüne scripts/i18n-translator.Modelfile ile kurulan çeviriye özelleşmiş model
-const JUDGE_MODEL = "gemma4:26b"; // "aynı" flag'inin gerçek bir kognat mı yoksa unutulmuş çeviri mi olduğuna karar veren genel model
-const LOCALES_DIR = join(process.cwd(), "src", "i18n", "locales");
-const SRC_DIR = join(process.cwd(), "src");
-const CONFIRMED_SAME_PATH = join(process.cwd(), "scripts", ".i18n-confirmed-same.json");
-const TRANSLATION_CACHE_PATH = join(process.cwd(), "scripts", ".i18n-translation-cache.json");
-const SOURCE_LOCALE = "en";
-const DASHBOARD_PORT = 5960;
-const AUTO_FIX_POLL_MS = 15000;
+// ---------- Yapılandırma: hedef repo kökündeki i18n-dash.config.json + otomatik keşif ----------
+// Araç hangi projede çalıştırılırsa oranın config'ini okur; config yoksa yaygın locale dizinlerini
+// kendisi bulur. Böylece dosyayı başka bir repoya kopyalayıp (veya `bun i18n-dashboard.tsx <proje-kökü>`
+// ile dışarıdan çalıştırıp) hiçbir şey ayarlamadan kullanmak mümkün.
+const PROJECT_ROOT = resolve(process.argv[2] || process.cwd());
+
+const DEFAULT_CONFIG = {
+  localesDir: "", // boş = otomatik keşif (aşağıdaki LOCALE_DIR_CANDIDATES + sınırlı tarama)
+  srcDir: "", // boş = varsa "src", yoksa proje kökü
+  sourceLocale: "en",
+  ollamaUrl: "http://localhost:11434/api/generate",
+  model: "gemma4:26b", // çeviri modeli (system prompt istek anında gönderiliyor, özel model gerekmez)
+  judgeModel: "gemma4:26b", // "aynı" flag'inin gerçek bir kognat mı yoksa unutulmuş çeviri mi olduğuna karar veren model
+  port: 5960,
+  autoFixPollMs: 15000,
+  appContext: "Bir uygulamanın UI metinlerini çeviriyorsun.", // prompt'lara giden uygulama tanımı — projeye göre özelleştirin
+  ignoreSameKeyPrefixes: [] as string[], // "aynı" denetiminden muaf key'ler (örn. dil adları: settings.english)
+  ignoreSameValues: ["OK", "AI", "API"] as string[], // her dilde aynı kalması normal değerler (marka/kısaltma)
+  dynamicPrefixes: [] as string[], // t(değişken) ile çağrılan, regex'in yakalayamadığı bilinen key önekleri
+};
+type Config = typeof DEFAULT_CONFIG;
+
+const CONFIG_PATH = join(PROJECT_ROOT, "i18n-dash.config.json");
+
+function loadConfig(): Config {
+  if (!existsSync(CONFIG_PATH)) return { ...DEFAULT_CONFIG };
+  try {
+    return { ...DEFAULT_CONFIG, ...JSON.parse(readFileSync(CONFIG_PATH, "utf-8")) };
+  } catch (err) {
+    console.error(`❌ ${CONFIG_PATH} geçersiz JSON:`, err);
+    process.exit(1);
+  }
+}
+
+const CONFIG = loadConfig();
+
+const OLLAMA_URL = CONFIG.ollamaUrl;
+const MODEL = CONFIG.model;
+const JUDGE_MODEL = CONFIG.judgeModel;
+const SOURCE_LOCALE = CONFIG.sourceLocale;
+const DASHBOARD_PORT = CONFIG.port;
+const AUTO_FIX_POLL_MS = CONFIG.autoFixPollMs;
+
+// Kod taramasında ve locale keşfinde atlanan dizinler
+const SKIP_DIRS = new Set([
+  "node_modules", ".git", "dist", "build", "out", ".next", ".expo", "coverage",
+  ".i18n-dash", "ios", "android", "vendor", "target",
+]);
+
+// pt.json, en-US.json, fil.json gibi locale dosyası adları
+const LOCALE_FILE_RE = /^[a-z]{2,3}(-[A-Za-z0-9]+)?\.json$/;
+
+const LOCALE_DIR_CANDIDATES = [
+  "src/i18n/locales", "src/i18n", "src/locales", "src/translations",
+  "i18n/locales", "i18n", "locales", "translations", "public/locales",
+  "app/i18n/locales", "app/i18n", "assets/i18n", "assets/locales",
+];
+
+// Kaynak dil dosyası + en az bir hedef dil dosyası içeren dizin mi?
+function isLocaleDir(dir: string): boolean {
+  if (!existsSync(join(dir, `${SOURCE_LOCALE}.json`))) return false;
+  try {
+    return readdirSync(dir).filter((f) => LOCALE_FILE_RE.test(f)).length >= 2;
+  } catch {
+    return false;
+  }
+}
+
+function discoverLocalesDir(): string | null {
+  for (const rel of LOCALE_DIR_CANDIDATES) {
+    const full = join(PROJECT_ROOT, rel);
+    if (isLocaleDir(full)) return full;
+  }
+  // Yaygın konumlarda yoksa: sınırlı derinlikte genişlik-öncelikli tarama
+  const queue: { dir: string; depth: number }[] = [{ dir: PROJECT_ROOT, depth: 0 }];
+  while (queue.length) {
+    const { dir, depth } = queue.shift()!;
+    if (isLocaleDir(dir)) return dir;
+    if (depth >= 4) continue;
+    let entries: string[];
+    try {
+      entries = readdirSync(dir);
+    } catch {
+      continue;
+    }
+    for (const e of entries) {
+      if (SKIP_DIRS.has(e) || e.startsWith(".")) continue;
+      const full = join(dir, e);
+      try {
+        if (statSync(full).isDirectory()) queue.push({ dir: full, depth: depth + 1 });
+      } catch {}
+    }
+  }
+  return null;
+}
+
+function resolveLocalesDir(): string {
+  if (CONFIG.localesDir) {
+    const full = resolve(PROJECT_ROOT, CONFIG.localesDir);
+    if (!isLocaleDir(full)) {
+      console.error(
+        `❌ Config'deki localesDir geçersiz: ${full}\n` +
+        `   Dizin, ${SOURCE_LOCALE}.json + en az bir hedef dil .json'ı içermeli.`
+      );
+      process.exit(1);
+    }
+    return full;
+  }
+  const found = discoverLocalesDir();
+  if (!found) {
+    console.error(
+      `❌ Locale dizini bulunamadı: ${PROJECT_ROOT} altında "${SOURCE_LOCALE}.json + diğer dil .json'ları" içeren bir dizin yok.\n` +
+      `   Çözüm: proje köküne i18n-dash.config.json ekleyip yolu belirtin, örn:\n` +
+      `   { "localesDir": "src/i18n/locales" }`
+    );
+    process.exit(1);
+  }
+  console.log(`🔎 Locale dizini otomatik bulundu: ${found}`);
+  return found;
+}
+
+const LOCALES_DIR = resolveLocalesDir();
+const SRC_DIR = CONFIG.srcDir
+  ? resolve(PROJECT_ROOT, CONFIG.srcDir)
+  : existsSync(join(PROJECT_ROOT, "src"))
+    ? join(PROJECT_ROOT, "src")
+    : PROJECT_ROOT;
+
+// ---------- Kalıcı state: .i18n-dash/ (hedef repoda, kendini git'ten gizler) ----------
+const STATE_DIR = join(PROJECT_ROOT, ".i18n-dash");
+const CONFIRMED_SAME_PATH = join(STATE_DIR, "confirmed-same.json");
+const TRANSLATION_CACHE_PATH = join(STATE_DIR, "translation-cache.json");
+// Eski sürümler scripts/ altına yazıyordu (üstelik kod noktalı adı okurken commit'lenen noktasızdı) —
+// ikisi de geriye dönük okunur, yazma her zaman yeni konuma yapılır.
+const LEGACY_STATE_PATHS: Record<string, string[]> = {
+  [CONFIRMED_SAME_PATH]: [
+    join(PROJECT_ROOT, "scripts", ".i18n-confirmed-same.json"),
+    join(PROJECT_ROOT, "scripts", "i18n-confirmed-same.json"),
+  ],
+  [TRANSLATION_CACHE_PATH]: [
+    join(PROJECT_ROOT, "scripts", ".i18n-translation-cache.json"),
+    join(PROJECT_ROOT, "scripts", "i18n-translation-cache.json"),
+  ],
+};
+
+function ensureStateDir() {
+  if (!existsSync(STATE_DIR)) {
+    mkdirSync(STATE_DIR, { recursive: true });
+    // içindeki .gitignore dizini komple git dışında tutar; hedef reponun .gitignore'una dokunulmaz
+    writeFileSync(join(STATE_DIR, ".gitignore"), "*\n", "utf-8");
+  }
+}
+
+function loadStateFile(path: string): any | null {
+  for (const p of [path, ...(LEGACY_STATE_PATHS[path] ?? [])]) {
+    if (!existsSync(p)) continue;
+    try {
+      return JSON.parse(readFileSync(p, "utf-8"));
+    } catch {}
+  }
+  return null;
+}
 
 process.on("uncaughtException", (err) => console.error("❌ Yakalanmamış hata (süreç devam ediyor):", err));
 process.on("unhandledRejection", (err) => console.error("❌ Yakalanmamış promise reddi (süreç devam ediyor):", err));
@@ -48,20 +201,12 @@ const LANGUAGE_NAMES: Record<string, { native: string; english: string }> = {
   ko: { native: "한국어", english: "Korean" },
 };
 
-// scripts/audit_i18n.py'den taşındı: bunlar "aynı" gibi görünse de kasıtlı — dil adları
-// (örn. Almanca dosyasında "İngilizce" için "English" yazması doğrudur), marka/ürün adları,
-// ve "Flashcards" gibi birçok dilde ödünç kelime olarak kalması normal olan terimler.
-// AI Doğrula bunları bağlamsız yargılayıp "şüpheli" diyebiliyor — insan zaten karar vermiş.
-const IGNORE_SAME_KEY_PREFIXES = [
-  "settings.turkish", "settings.english", "settings.german", "settings.french", "settings.spanish",
-  "settings.portuguese", "settings.italian", "settings.dutch", "settings.polish", "settings.swedish",
-  "settings.danish", "settings.norwegian", "settings.finnish", "settings.czech", "settings.romanian",
-  "settings.hungarian", "settings.ukrainian", "settings.russian", "settings.greek", "settings.hebrew",
-  "settings.arabic", "settings.persian", "settings.hindi", "settings.bengali", "settings.thai",
-  "settings.vietnamese", "settings.indonesian", "settings.chinese", "settings.japanese", "settings.korean",
-  "home.appName", "flashcards.title",
-];
-const IGNORE_SAME_VALUES = new Set(["AI", "API", "LMS", "OK", "Mindhouse Panel", "Flashcards", "Gemini", "Groq", "Ollama"]);
+// Config'den gelir: bunlar "aynı" gibi görünse de kasıtlı — dil adları (örn. Almanca dosyasında
+// "İngilizce" için "English" yazması doğrudur), marka/ürün adları, ve birçok dilde ödünç kelime
+// olarak kalması normal olan terimler. AI Doğrula bunları bağlamsız yargılayıp "şüpheli"
+// diyebiliyor — insan zaten karar vermiş. Projeye özel liste için i18n-dash.config.json'a bakın.
+const IGNORE_SAME_KEY_PREFIXES = CONFIG.ignoreSameKeyPrefixes;
+const IGNORE_SAME_VALUES = new Set(CONFIG.ignoreSameValues);
 
 function isIgnoredSame(keyPath: string, enValue: string): boolean {
   if (IGNORE_SAME_VALUES.has(enValue)) return true;
@@ -69,10 +214,11 @@ function isIgnoredSame(keyPath: string, enValue: string): boolean {
 }
 
 // ---------- Locale dosyaları: okuma/yazma ----------
-// Kaynak dosyalar CRLF + trailing-newline'sız; git diff'i temiz tutmak için aynı formatta geri yazıyoruz.
+// Git diff'i temiz tutmak için her dosya kendi mevcut formatında (CRLF/LF, sondaki newline
+// var/yok) geri yazılır; format dosyadan algılanır, varsayım yapılmaz.
 function listLocaleCodes(): string[] {
   return readdirSync(LOCALES_DIR)
-    .filter((f) => f.endsWith(".json"))
+    .filter((f) => LOCALE_FILE_RE.test(f))
     .map((f) => f.replace(/\.json$/, ""))
     .sort();
 }
@@ -82,8 +228,16 @@ function loadLocale(code: string): any {
 }
 
 function saveLocale(code: string, data: any) {
-  const json = JSON.stringify(data, null, 2).replace(/\n/g, "\r\n");
-  writeFileSync(join(LOCALES_DIR, `${code}.json`), json, "utf-8");
+  const path = join(LOCALES_DIR, `${code}.json`);
+  let eol = "\n";
+  let trailing = "\n";
+  try {
+    const existing = readFileSync(path, "utf-8");
+    eol = existing.includes("\r\n") ? "\r\n" : "\n";
+    trailing = /\r?\n$/.test(existing) ? eol : "";
+  } catch {}
+  const json = JSON.stringify(data, null, 2).replace(/\n/g, eol) + trailing;
+  writeFileSync(path, json, "utf-8");
 }
 
 function getPath(obj: any, path: string): any {
@@ -128,6 +282,7 @@ function walkSourceFiles(dir: string, out: string[] = []): string[] {
     return out;
   }
   for (const entry of entries) {
+    if (SKIP_DIRS.has(entry) || entry.startsWith(".")) continue;
     const full = join(dir, entry);
     let st;
     try {
@@ -144,9 +299,10 @@ function walkSourceFiles(dir: string, out: string[] = []): string[] {
   return out;
 }
 
-// explore.tsx gibi bazı yerlerde template-literal önce bir değişkene atanıp t(değişken) olarak
-// çağrılıyor — tek satırlık regex bunu yakalayamıyor, o yüzden bilinen istisnaları elle ekliyoruz.
-const KNOWN_DYNAMIC_PREFIXES = ["explore.steps."];
+// Bazı yerlerde template-literal önce bir değişkene atanıp t(değişken) olarak çağrılıyor —
+// tek satırlık regex bunu yakalayamıyor, o yüzden bilinen istisnalar config'den elle veriliyor
+// (i18n-dash.config.json → "dynamicPrefixes").
+const KNOWN_DYNAMIC_PREFIXES = CONFIG.dynamicPrefixes;
 
 function extractDynamicPrefixes(patterns: string[]): string[] {
   const prefixes = new Set<string>(KNOWN_DYNAMIC_PREFIXES);
@@ -229,12 +385,13 @@ const MISSING_KEY_SCHEMA = { type: "object", properties: { value: { type: "strin
 async function generateMissingKeyValue(key: string, context: string | null): Promise<string | null> {
   try {
     const contextText = context || "(kod içinde context bulunamadı, sadece key adına bak)";
-    const prompt = `Bir React Native (Expo) eğitim uygulamasının i18n dosyasında (en.json) şu key eksik: "${key}"
+    const prompt = `Bir uygulamanın i18n kaynak dosyasında (${SOURCE_LOCALE}.json) şu key eksik: "${key}"
+Uygulama bağlamı: ${CONFIG.appContext}
 
 Kodda bu key şöyle kullanılıyor:
 """${contextText}"""
 
-Yukarıdaki kod bağlamına (özellikle varsa defaultValue) bakarak, bu key için en.json'a yazılacak DOĞRU İNGİLİZCE metni üret. Eğer defaultValue İngilizce değilse, anlamını koruyarak İngilizce'ye çevir. Kısa ve doğal bir UI metni olsun, açıklama ekleme.`;
+Yukarıdaki kod bağlamına (özellikle varsa defaultValue) bakarak, bu key için ${SOURCE_LOCALE}.json'a yazılacak DOĞRU metni kaynak dilde (${LANGUAGE_NAMES[SOURCE_LOCALE]?.english ?? SOURCE_LOCALE}) üret. Eğer defaultValue kaynak dilde değilse, anlamını koruyarak kaynak dile çevir. Kısa ve doğal bir UI metni olsun, açıklama ekleme.`;
 
     const res = await fetch(OLLAMA_URL, {
       method: "POST",
@@ -291,15 +448,11 @@ function acceptTranslatedValue(sourceValue: string | string[], val: any): string
 // ---------- "Aynı" (en ile birebir eşit) flag'i için AI ile onaylanmış kognat/terim listesi ----------
 // key -> o key'de İngilizce ile aynı olması AI tarafından onaylanmış locale kodları
 function loadConfirmedSame(): Record<string, string[]> {
-  if (!existsSync(CONFIRMED_SAME_PATH)) return {};
-  try {
-    return JSON.parse(readFileSync(CONFIRMED_SAME_PATH, "utf-8"));
-  } catch {
-    return {};
-  }
+  return loadStateFile(CONFIRMED_SAME_PATH) ?? {};
 }
 
 function saveConfirmedSame(data: Record<string, string[]>) {
+  ensureStateDir();
   writeFileSync(CONFIRMED_SAME_PATH, JSON.stringify(data, null, 2) + "\n", "utf-8");
 }
 
@@ -319,15 +472,11 @@ function markConfirmedSame(key: string, locale: string) {
 // (locale) çiftini bir daha Ollama'ya sormadan lokalden döndürür. Sadece düz string'ler için;
 // dizi (array) değerli key'lerin aynı içerikle tekrar etme ihtimali pratikte yok, cache'lenmiyor.
 function loadTranslationCache(): Record<string, Record<string, string>> {
-  if (!existsSync(TRANSLATION_CACHE_PATH)) return {};
-  try {
-    return JSON.parse(readFileSync(TRANSLATION_CACHE_PATH, "utf-8"));
-  } catch {
-    return {};
-  }
+  return loadStateFile(TRANSLATION_CACHE_PATH) ?? {};
 }
 
 function saveTranslationCache(data: Record<string, Record<string, string>>) {
+  ensureStateDir();
   writeFileSync(TRANSLATION_CACHE_PATH, JSON.stringify(data, null, 2) + "\n", "utf-8");
 }
 
@@ -384,6 +533,18 @@ function buildData() {
 }
 
 // ---------- Ollama: tek key'i istenen dillerin HEPSİNE tek çağrıda çevir (JSON schema constrained) ----------
+// Eskiden scripts/i18n-translator.Modelfile ile özel model oluşturuluyordu; aynı SYSTEM prompt
+// artık her istekte gönderiliyor — çıktı birebir aynı, kurulum adımı yok, uygulama tanımı config'den.
+const TRANSLATOR_SYSTEM = `Sen SADECE arayüz metni çevirisi yapan bir çeviri motorusun. ${CONFIG.appContext}
+
+Kesin kurallar:
+- {{değişken}} biçimindeki placeholder'ları (örn. {{count}}, {{subject}}) AYNEN koru: çevirme, silme, adını değiştirme.
+- Kısa ve doğal bir arayüz metni çevirisi yap; hedef dilin UI konvansiyonlarına uygun ol.
+- Kaynağın büyük/küçük harf ve noktalama tonunu koru (başlıksa başlık gibi, kısa uyarıysa kısa uyarı gibi).
+- Açıklama, tırnak işareti, markdown, giriş cümlesi EKLEME — sadece çeviri metnini/metinlerini döndür.
+- Çeviri dışında hiçbir şey yapma: yorum yapma, soru sorma, sohbet etme, ek bilgi verme, konu değiştirme.
+- Yanıtı SADECE istenen JSON şemasına göre ver: her dil kodu bir alan, değeri o dildeki çeviri metni.`;
+
 function buildSchema(codes: string[], arrayLength?: number) {
   const properties: Record<string, any> = {};
   for (const c of codes) {
@@ -404,14 +565,16 @@ async function translateKeyViaOllama(
   try {
     const targetList = codes.map((c) => `${c} = ${LANGUAGE_NAMES[c]?.english ?? c}`).join(", ");
     const isArray = Array.isArray(sourceValue);
-    // Çeviri kuralları artık i18n-translator modelinin SYSTEM prompt'unda (bkz. scripts/i18n-translator.Modelfile),
-    // burada sadece istek bazlı değişkenler kalıyor.
+    // Çeviri kuralları TRANSLATOR_SYSTEM ile istek anında gönderiliyor (eskiden özel bir Ollama
+    // modelinin Modelfile'ındaydı — artık `ollama create` adımı gerekmiyor, taban model yeterli).
+    // Burada sadece istek bazlı değişkenler kalıyor.
+    const srcLang = LANGUAGE_NAMES[SOURCE_LOCALE]?.english ?? SOURCE_LOCALE;
     const prompt = isArray
-      ? `Kaynak metin listesi (İngilizce, key: "${keyPath}", ${sourceValue.length} madde, sırayla):
+      ? `Kaynak metin listesi (${srcLang}, key: "${keyPath}", ${sourceValue.length} madde, sırayla):
 ${sourceValue.map((s, i) => `${i + 1}. """${s}"""`).join("\n")}
 
 Bu listedeki HER MADDEYİ ayrı ayrı, sırasını ve toplam madde sayısını (${sourceValue.length}) koruyarak aşağıdaki dillerin HER BİRİNE çevir: ${targetList}`
-      : `Kaynak metin (İngilizce, key: "${keyPath}"):
+      : `Kaynak metin (${srcLang}, key: "${keyPath}"):
 """${sourceValue}"""
 
 Bu metni aşağıdaki dillerin HER BİRİNE çevir: ${targetList}`;
@@ -421,11 +584,12 @@ Bu metni aşağıdaki dillerin HER BİRİNE çevir: ${targetList}`;
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         model: MODEL,
+        system: TRANSLATOR_SYSTEM,
         prompt,
         format: buildSchema(codes, isArray ? sourceValue.length : undefined),
         stream: false,
         think: false,
-        options: { temperature: 0.2 },
+        options: { temperature: 0.2, repeat_penalty: 1.1 },
       }),
     });
     if (!res.ok) return null;
@@ -500,11 +664,13 @@ async function judgeSameTranslation(
 ): Promise<{ plausible: boolean; reason: string } | null> {
   try {
     const lang = LANGUAGE_NAMES[locale]?.english ?? locale;
-    const prompt = `Bir mobil uygulamanın arayüz metni için şu key var: "${keyPath}"
-Kaynak (İngilizce): """${sourceText}"""
+    const srcLang = LANGUAGE_NAMES[SOURCE_LOCALE]?.english ?? SOURCE_LOCALE;
+    const prompt = `Bir uygulamanın arayüz metni için şu key var: "${keyPath}"
+Uygulama bağlamı: ${CONFIG.appContext}
+Kaynak (${srcLang}): """${sourceText}"""
 ${lang} (${locale}) çevirisi olarak kayıtlı değer HARFİYEN AYNI: """${sourceText}"""
 
-Bu, ${lang} dilinde GERÇEKTEN doğru/beklenen bir çeviri mi (örn. ortak köklü kelime/kognat, marka adı, teknik terim, sayı, kısaltma)? Yoksa muhtemelen çevrilmesi unutulmuş, İngilizce kalmış bir metin mi?
+Bu, ${lang} dilinde GERÇEKTEN doğru/beklenen bir çeviri mi (örn. ortak köklü kelime/kognat, marka adı, teknik terim, sayı, kısaltma)? Yoksa muhtemelen çevrilmesi unutulmuş, kaynak dilde (${srcLang}) kalmış bir metin mi?
 
 plausible=true ise kısa bir gerekçe (ör. hangi kognat/terim), false ise neden şüpheli olduğunu tek cümlede yaz.`;
 
@@ -1885,5 +2051,8 @@ Bun.serve({
   },
 });
 
-console.log(`\n🌍 i18n Dashboard: http://localhost:${DASHBOARD_PORT}\n`);
+console.log(`\n🌍 i18n Dashboard: http://localhost:${DASHBOARD_PORT}`);
+console.log(`📁 Proje kökü: ${PROJECT_ROOT}${existsSync(CONFIG_PATH) ? " (i18n-dash.config.json okundu)" : " (config yok, varsayılanlar + otomatik keşif)"}`);
+console.log(`📂 Locale dizini: ${LOCALES_DIR} — ${listLocaleCodes().length} dil, kaynak: ${SOURCE_LOCALE}`);
+console.log(`🤖 Ollama: ${OLLAMA_URL} | çeviri: ${MODEL} | yargıç: ${JUDGE_MODEL}\n`);
 autoFixLoop();
