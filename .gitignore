@@ -1,5 +1,8 @@
 node_modules/
 
+# LocaleSmith desktop app (commercial, not part of the open-source repo)
+desktop/
+
 # i18n Dashboard state (cache + AI approvals) — kept under .i18n-dash/ in the target repo
 .i18n-dash/
 

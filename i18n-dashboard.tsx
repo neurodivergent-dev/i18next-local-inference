@@ -1441,3 +1441,6 @@ if (LOCALES_DIR) {
 }
 console.log(`🤖 Ollama: ${OLLAMA_URL} | translator: ${MODEL} | judge: ${JUDGE_MODEL}\n`);
 autoFixLoop();
+
+// Lets wrappers (e.g. a desktop shell) import this module and learn where the server landed
+export { DASHBOARD_PORT };
