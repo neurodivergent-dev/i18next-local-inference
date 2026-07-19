@@ -1,14 +1,15 @@
 #!/usr/bin/env bun
 import { readFileSync, writeFileSync, readdirSync, existsSync, statSync, mkdirSync } from "fs";
-import { join, resolve } from "path";
+import { join, resolve, dirname, basename } from "path";
+import { homedir } from "os";
 // @ts-expect-error Bun resolves HTML imports as fullstack routes
 import dashboardPage from "./dashboard.html";
 
 // ---------- Configuration: i18n-dash.config.json in the target project root + auto-discovery ----------
-// The tool reads the config of whichever project it runs in; without a config it finds common
-// locale directories on its own. That makes it plug-and-play: copy the file into another repo
-// (or run `bun i18n-dashboard.tsx <project-root>` from outside) with zero setup.
-const PROJECT_ROOT = resolve(process.argv[2] || process.cwd());
+// The tool reads the config of whichever project it points at; without a config it finds common
+// locale directories on its own. The project can be given on the CLI (`bun i18n-dashboard.tsx
+// <project-root>`), defaults to the cwd, and can be switched at runtime from the dashboard UI —
+// all project-derived state below is mutable and rebuilt by applyProject().
 
 const DEFAULT_CONFIG = {
   localesDir: "", // empty = auto-discover (LOCALE_DIR_CANDIDATES below + limited scan)
@@ -27,26 +28,27 @@ const DEFAULT_CONFIG = {
 };
 type Config = typeof DEFAULT_CONFIG;
 
-const CONFIG_PATH = join(PROJECT_ROOT, "i18n-dash.config.json");
-
-function loadConfig(): Config {
-  if (!existsSync(CONFIG_PATH)) return { ...DEFAULT_CONFIG };
-  try {
-    return { ...DEFAULT_CONFIG, ...JSON.parse(readFileSync(CONFIG_PATH, "utf-8")) };
-  } catch (err) {
-    console.error(`❌ ${CONFIG_PATH} is not valid JSON:`, err);
-    process.exit(1);
-  }
-}
-
-const CONFIG = loadConfig();
-
-const OLLAMA_URL = CONFIG.ollamaUrl;
-const MODEL = CONFIG.model;
-const JUDGE_MODEL = CONFIG.judgeModel;
-const SOURCE_LOCALE = CONFIG.sourceLocale;
-const DASHBOARD_PORT = CONFIG.port;
-const AUTO_FIX_POLL_MS = CONFIG.autoFixPollMs;
+// ---------- Mutable project-derived runtime state (rebuilt by applyProject) ----------
+let PROJECT_ROOT = "";
+let CONFIG_PATH = "";
+let CONFIG: Config = { ...DEFAULT_CONFIG };
+let PROJECT_ERROR: string | null = null; // human-readable reason when the project has no usable locales
+let OLLAMA_URL = DEFAULT_CONFIG.ollamaUrl;
+let MODEL = DEFAULT_CONFIG.model;
+let JUDGE_MODEL = DEFAULT_CONFIG.judgeModel;
+let SOURCE_LOCALE = DEFAULT_CONFIG.sourceLocale;
+let AUTO_FIX_POLL_MS = DEFAULT_CONFIG.autoFixPollMs;
+let LOCALES_DIR: string | null = null;
+let SRC_DIR = "";
+let STATE_DIR = "";
+let CONFIRMED_SAME_PATH = "";
+let TRANSLATION_CACHE_PATH = "";
+let FLAGGED_SUSPICIOUS_PATH = "";
+let LEGACY_STATE_PATHS: Record<string, string[]> = {};
+let IGNORE_SAME_KEY_PREFIXES: string[] = [];
+let IGNORE_SAME_VALUES = new Set<string>();
+let KNOWN_DYNAMIC_PREFIXES: string[] = [];
+let TRANSLATOR_SYSTEM = "";
 
 // Directories skipped during code scans and locale discovery
 const SKIP_DIRS = new Set([
@@ -64,8 +66,8 @@ const LOCALE_DIR_CANDIDATES = [
 ];
 
 // Does the directory contain the source-locale file plus at least one target-locale file?
-function isLocaleDir(dir: string): boolean {
-  if (!existsSync(join(dir, `${SOURCE_LOCALE}.json`))) return false;
+function isLocaleDir(dir: string, sourceLocale: string): boolean {
+  if (!existsSync(join(dir, `${sourceLocale}.json`))) return false;
   try {
     return readdirSync(dir).filter((f) => LOCALE_FILE_RE.test(f)).length >= 2;
   } catch {
@@ -73,16 +75,16 @@ function isLocaleDir(dir: string): boolean {
   }
 }
 
-function discoverLocalesDir(): string | null {
+function discoverLocalesDir(root: string, sourceLocale: string): string | null {
   for (const rel of LOCALE_DIR_CANDIDATES) {
-    const full = join(PROJECT_ROOT, rel);
-    if (isLocaleDir(full)) return full;
+    const full = join(root, rel);
+    if (isLocaleDir(full, sourceLocale)) return full;
   }
   // Not in the common spots: limited-depth breadth-first scan
-  const queue: { dir: string; depth: number }[] = [{ dir: PROJECT_ROOT, depth: 0 }];
+  const queue: { dir: string; depth: number }[] = [{ dir: root, depth: 0 }];
   while (queue.length) {
     const { dir, depth } = queue.shift()!;
-    if (isLocaleDir(dir)) return dir;
+    if (isLocaleDir(dir, sourceLocale)) return dir;
     if (depth >= 4) continue;
     let entries: string[];
     try {
@@ -101,55 +103,97 @@ function discoverLocalesDir(): string | null {
   return null;
 }
 
-function resolveLocalesDir(): string {
-  if (CONFIG.localesDir) {
-    const full = resolve(PROJECT_ROOT, CONFIG.localesDir);
-    if (!isLocaleDir(full)) {
-      console.error(
-        `❌ localesDir from config is invalid: ${full}\n` +
-        `   The directory must contain ${SOURCE_LOCALE}.json plus at least one target-language .json file.`
-      );
-      process.exit(1);
-    }
-    return full;
+// ---------- Recent projects (user-level, for the UI picker) ----------
+const RECENTS_PATH = join(homedir(), ".i18n-dash-recents.json");
+
+function loadRecents(): string[] {
+  try {
+    const r = JSON.parse(readFileSync(RECENTS_PATH, "utf-8"));
+    return Array.isArray(r) ? r.filter((p) => typeof p === "string") : [];
+  } catch {
+    return [];
   }
-  const found = discoverLocalesDir();
-  if (!found) {
-    console.error(
-      `❌ Locales directory not found: nothing under ${PROJECT_ROOT} contains "${SOURCE_LOCALE}.json + other language .json files".\n` +
-      `   Fix: create i18n-dash.config.json in the project root and set the path, e.g.:\n` +
-      `   { "localesDir": "src/i18n/locales" }`
-    );
-    process.exit(1);
-  }
-  console.log(`🔎 Locales directory auto-discovered: ${found}`);
-  return found;
 }
 
-const LOCALES_DIR = resolveLocalesDir();
-const SRC_DIR = CONFIG.srcDir
-  ? resolve(PROJECT_ROOT, CONFIG.srcDir)
-  : existsSync(join(PROJECT_ROOT, "src"))
-    ? join(PROJECT_ROOT, "src")
-    : PROJECT_ROOT;
+function rememberRecent(root: string) {
+  const list = [root, ...loadRecents().filter((p) => p !== root)].slice(0, 8);
+  try {
+    writeFileSync(RECENTS_PATH, JSON.stringify(list, null, 2) + "\n", "utf-8");
+  } catch {}
+}
 
-// ---------- Persistent state: .i18n-dash/ (in the target repo, hides itself from git) ----------
-const STATE_DIR = join(PROJECT_ROOT, ".i18n-dash");
-const CONFIRMED_SAME_PATH = join(STATE_DIR, "confirmed-same.json");
-const TRANSLATION_CACHE_PATH = join(STATE_DIR, "translation-cache.json");
-const FLAGGED_SUSPICIOUS_PATH = join(STATE_DIR, "flagged-suspicious.json");
-// Older versions wrote under scripts/ (and the code read a dot-prefixed name while the committed
-// file had none) — both legacy names are still read; writes always go to the new location.
-const LEGACY_STATE_PATHS: Record<string, string[]> = {
-  [CONFIRMED_SAME_PATH]: [
-    join(PROJECT_ROOT, "scripts", ".i18n-confirmed-same.json"),
-    join(PROJECT_ROOT, "scripts", "i18n-confirmed-same.json"),
-  ],
-  [TRANSLATION_CACHE_PATH]: [
-    join(PROJECT_ROOT, "scripts", ".i18n-translation-cache.json"),
-    join(PROJECT_ROOT, "scripts", "i18n-translation-cache.json"),
-  ],
-};
+// ---------- applyProject: point the whole tool at a project root ----------
+// Rebuilds every piece of project-derived state. Never exits the process: on failure the
+// dashboard stays up with PROJECT_ERROR set so the UI can show the picker instead.
+function applyProject(root: string): { ok: boolean; error: string | null } {
+  PROJECT_ROOT = resolve(root);
+  CONFIG_PATH = join(PROJECT_ROOT, "i18n-dash.config.json");
+  PROJECT_ERROR = null;
+
+  CONFIG = { ...DEFAULT_CONFIG };
+  if (existsSync(CONFIG_PATH)) {
+    try {
+      CONFIG = { ...DEFAULT_CONFIG, ...JSON.parse(readFileSync(CONFIG_PATH, "utf-8")) };
+    } catch (err) {
+      PROJECT_ERROR = `i18n-dash.config.json is not valid JSON: ${err}`;
+    }
+  }
+
+  OLLAMA_URL = CONFIG.ollamaUrl;
+  MODEL = CONFIG.model;
+  JUDGE_MODEL = CONFIG.judgeModel;
+  SOURCE_LOCALE = CONFIG.sourceLocale;
+  AUTO_FIX_POLL_MS = CONFIG.autoFixPollMs;
+  IGNORE_SAME_KEY_PREFIXES = CONFIG.ignoreSameKeyPrefixes;
+  IGNORE_SAME_VALUES = new Set(CONFIG.ignoreSameValues);
+  KNOWN_DYNAMIC_PREFIXES = CONFIG.dynamicPrefixes;
+  TRANSLATOR_SYSTEM = buildTranslatorSystem();
+
+  LOCALES_DIR = null;
+  if (!PROJECT_ERROR) {
+    if (CONFIG.localesDir) {
+      const full = resolve(PROJECT_ROOT, CONFIG.localesDir);
+      if (isLocaleDir(full, SOURCE_LOCALE)) LOCALES_DIR = full;
+      else PROJECT_ERROR = `localesDir from config is invalid: ${full} (must contain ${SOURCE_LOCALE}.json plus at least one target-language .json file)`;
+    } else {
+      LOCALES_DIR = discoverLocalesDir(PROJECT_ROOT, SOURCE_LOCALE);
+      if (!LOCALES_DIR) {
+        PROJECT_ERROR = `No locales directory found under ${PROJECT_ROOT} (looked for a folder with ${SOURCE_LOCALE}.json plus other language .json files). Set "localesDir" in the settings.`;
+      }
+    }
+  }
+
+  SRC_DIR = CONFIG.srcDir
+    ? resolve(PROJECT_ROOT, CONFIG.srcDir)
+    : existsSync(join(PROJECT_ROOT, "src"))
+      ? join(PROJECT_ROOT, "src")
+      : PROJECT_ROOT;
+
+  // Persistent state lives in .i18n-dash/ inside the target repo (self-gitignored).
+  // Older versions wrote under scripts/ (with a dot/no-dot name mismatch) — both are still read.
+  STATE_DIR = join(PROJECT_ROOT, ".i18n-dash");
+  CONFIRMED_SAME_PATH = join(STATE_DIR, "confirmed-same.json");
+  TRANSLATION_CACHE_PATH = join(STATE_DIR, "translation-cache.json");
+  FLAGGED_SUSPICIOUS_PATH = join(STATE_DIR, "flagged-suspicious.json");
+  LEGACY_STATE_PATHS = {
+    [CONFIRMED_SAME_PATH]: [
+      join(PROJECT_ROOT, "scripts", ".i18n-confirmed-same.json"),
+      join(PROJECT_ROOT, "scripts", "i18n-confirmed-same.json"),
+    ],
+    [TRANSLATION_CACHE_PATH]: [
+      join(PROJECT_ROOT, "scripts", ".i18n-translation-cache.json"),
+      join(PROJECT_ROOT, "scripts", "i18n-translation-cache.json"),
+    ],
+  };
+
+  if (LOCALES_DIR) {
+    rememberRecent(PROJECT_ROOT);
+    console.log(`📂 Project applied: ${PROJECT_ROOT} → ${LOCALES_DIR}`);
+  } else {
+    console.error(`❌ ${PROJECT_ERROR}`);
+  }
+  return { ok: !!LOCALES_DIR, error: PROJECT_ERROR };
+}
 
 function ensureStateDir() {
   if (!existsSync(STATE_DIR)) {
@@ -205,13 +249,9 @@ const LANGUAGE_NAMES: Record<string, { native: string; english: string }> = {
   ko: { native: "한국어", english: "Korean" },
 };
 
-// Comes from config: these look "same" but are intentional — language names (e.g. the German
-// file correctly says "English" for English), brand/product names, and terms that normally stay
-// as loanwords in many languages. AI Verify judges them without context and may call them
-// "suspicious" — a human already decided. See i18n-dash.config.json for the per-project list.
-const IGNORE_SAME_KEY_PREFIXES = CONFIG.ignoreSameKeyPrefixes;
-const IGNORE_SAME_VALUES = new Set(CONFIG.ignoreSameValues);
-
+// IGNORE_SAME_* come from config (set in applyProject): these look "same" but are intentional —
+// language names (e.g. the German file correctly says "English" for English), brand/product
+// names, and terms that normally stay as loanwords. A human already decided; the AI judge skips them.
 function isIgnoredSame(keyPath: string, enValue: string): boolean {
   if (IGNORE_SAME_VALUES.has(enValue)) return true;
   return IGNORE_SAME_KEY_PREFIXES.some((p) => keyPath === p || keyPath.startsWith(p + "."));
@@ -221,18 +261,18 @@ function isIgnoredSame(keyPath: string, enValue: string): boolean {
 // To keep git diffs clean, every file is written back in its own existing format (CRLF/LF,
 // trailing newline or not); the format is detected from the file, never assumed.
 function listLocaleCodes(): string[] {
-  return readdirSync(LOCALES_DIR)
+  return readdirSync(LOCALES_DIR!)
     .filter((f) => LOCALE_FILE_RE.test(f))
     .map((f) => f.replace(/\.json$/, ""))
     .sort();
 }
 
 function loadLocale(code: string): any {
-  return JSON.parse(readFileSync(join(LOCALES_DIR, `${code}.json`), "utf-8"));
+  return JSON.parse(readFileSync(join(LOCALES_DIR!, `${code}.json`), "utf-8"));
 }
 
 function saveLocale(code: string, data: any) {
-  const path = join(LOCALES_DIR, `${code}.json`);
+  const path = join(LOCALES_DIR!, `${code}.json`);
   let eol = "\n";
   let trailing = "\n";
   try {
@@ -304,8 +344,7 @@ function walkSourceFiles(dir: string, out: string[] = []): string[] {
 
 // In some codebases a template literal is first assigned to a variable and then called as
 // t(variable) — a single-line regex cannot catch that, so known exceptions are supplied
-// manually via config (i18n-dash.config.json → "dynamicPrefixes").
-const KNOWN_DYNAMIC_PREFIXES = CONFIG.dynamicPrefixes;
+// manually via config (KNOWN_DYNAMIC_PREFIXES, set in applyProject).
 
 function extractDynamicPrefixes(patterns: string[]): string[] {
   const prefixes = new Set<string>(KNOWN_DYNAMIC_PREFIXES);
@@ -514,6 +553,9 @@ function saveTranslationCache(data: Record<string, Record<string, string>>) {
 
 // ---------- Dashboard data: canonical key set from the source locale, per-key status for every target language ----------
 function buildData() {
+  if (!LOCALES_DIR) {
+    return { sections: [], languages: [], sourceLocale: SOURCE_LOCALE, targetLocales: [], projectError: PROJECT_ERROR };
+  }
   const codes = listLocaleCodes();
   const localeData: Record<string, any> = {};
   for (const c of codes) localeData[c] = loadLocale(c);
@@ -572,7 +614,8 @@ function buildData() {
 // ---------- Ollama: translate one key into ALL requested languages in a single call (JSON schema constrained) ----------
 // A custom Ollama model used to be built from a Modelfile; the same SYSTEM prompt is now sent
 // with every request — identical output, no setup step, app description comes from config.
-const TRANSLATOR_SYSTEM = `You are a translation engine that ONLY translates user-interface text. ${CONFIG.appContext}
+function buildTranslatorSystem(): string {
+  return `You are a translation engine that ONLY translates user-interface text. ${CONFIG.appContext}
 
 Strict rules:
 - Keep {{variable}} placeholders (e.g. {{count}}, {{subject}}) EXACTLY as they are: never translate, drop, or rename them.
@@ -581,6 +624,7 @@ Strict rules:
 - Do NOT add explanations, quotes, markdown, or introductions — return only the translated text(s).
 - Do nothing besides translating: no comments, no questions, no chit-chat, no extra info, no topic changes.
 - Respond ONLY according to the requested JSON schema: one field per language code, its value the translation in that language.`;
+}
 
 function buildSchema(codes: string[], arrayLength?: number) {
   const properties: Record<string, any> = {};
@@ -870,6 +914,10 @@ async function autoVerifyPass() {
 async function autoFixLoop() {
   while (true) {
     try {
+      if (!LOCALES_DIR) {
+        await sleep(AUTO_FIX_POLL_MS);
+        continue;
+      }
       if (autoFixStatus.enabled) await autoFixTranslatePass();
       if (autoFixStatus.verifyEnabled) await autoVerifyPass();
       autoFixStatus.phase = "idle";
@@ -1172,9 +1220,123 @@ function streamTranslateSuspicious(): Response {
   });
 }
 
-// ---------- Server ----------
+// ---------- Project & config management (backs the UI picker and settings) ----------
+function projectInfo() {
+  return {
+    projectRoot: PROJECT_ROOT,
+    projectName: basename(PROJECT_ROOT),
+    localesDir: LOCALES_DIR,
+    error: PROJECT_ERROR,
+    configPath: CONFIG_PATH,
+    configExists: existsSync(CONFIG_PATH),
+    config: CONFIG,
+    port: DASHBOARD_PORT,
+    recents: loadRecents(),
+  };
+}
+
+function resetPassCounters() {
+  autoFixStatus.phase = "idle";
+  autoFixStatus.currentKey = null;
+  autoFixStatus.fixedThisPass = 0;
+  autoFixStatus.remainingKeys = 0;
+  autoFixStatus.verifiedThisPass = 0;
+  autoFixStatus.confirmedThisPass = 0;
+  autoFixStatus.flaggedThisPass = 0;
+  autoFixStatus.remainingPairs = 0;
+  broadcastAutoFix();
+}
+
+async function handleSetProject(req: Request): Promise<Response> {
+  const { path } = await req.json();
+  if (!path || typeof path !== "string") return Response.json({ error: "path is required" }, { status: 400 });
+  if (!existsSync(path)) return Response.json({ error: "Folder does not exist" }, { status: 400 });
+  applyProject(path);
+  resetPassCounters();
+  return Response.json(projectInfo());
+}
+
+const CONFIG_KEYS = Object.keys(DEFAULT_CONFIG) as (keyof Config)[];
+
+// Writes UI-edited settings into the project's i18n-dash.config.json (preserving any extra
+// fields the user keeps there) and re-applies the project so changes take effect immediately.
+async function handleSaveConfig(req: Request): Promise<Response> {
+  const body = await req.json();
+  let onDisk: any = {};
+  if (existsSync(CONFIG_PATH)) {
+    try {
+      onDisk = JSON.parse(readFileSync(CONFIG_PATH, "utf-8"));
+    } catch {}
+  }
+  for (const k of CONFIG_KEYS) {
+    if (k in body) onDisk[k] = body[k];
+  }
+  writeFileSync(CONFIG_PATH, JSON.stringify(onDisk, null, 2) + "\n", "utf-8");
+  applyProject(PROJECT_ROOT);
+  resetPassCounters();
+  const restartRequired = typeof onDisk.port === "number" && onDisk.port !== DASHBOARD_PORT;
+  return Response.json({ ...projectInfo(), restartRequired });
+}
+
+// Folder listing for the project picker. Root level = home dir + drive roots (Windows).
+function handleBrowse(url: URL): Response {
+  const raw = url.searchParams.get("path") || "";
+  if (!raw) {
+    const dirs = [{ name: "Home", path: homedir(), isProject: false }];
+    for (const letter of "ABCDEFGHIJKLMNOPQRSTUVWXYZ") {
+      const drive = `${letter}:\\`;
+      if (existsSync(drive)) dirs.push({ name: drive, path: drive, isProject: false });
+    }
+    return Response.json({ path: "", parent: null, dirs });
+  }
+  const p = resolve(raw);
+  let entries: string[];
+  try {
+    entries = readdirSync(p);
+  } catch (err) {
+    return Response.json({ error: `Cannot read folder: ${err}` }, { status: 400 });
+  }
+  const dirs: { name: string; path: string; isProject: boolean }[] = [];
+  for (const e of entries) {
+    if (e.startsWith(".") || SKIP_DIRS.has(e)) continue;
+    const full = join(p, e);
+    try {
+      if (!statSync(full).isDirectory()) continue;
+    } catch {
+      continue;
+    }
+    dirs.push({ name: e, path: full, isProject: existsSync(join(full, "package.json")) });
+  }
+  dirs.sort((a, b) => (b.isProject ? 1 : 0) - (a.isProject ? 1 : 0) || a.name.localeCompare(b.name));
+  const parent = dirname(p);
+  return Response.json({ path: p, parent: parent === p ? "" : parent, dirs });
+}
+
+// Installed Ollama models, so the settings UI can offer dropdowns instead of free text
+async function handleOllamaModels(): Promise<Response> {
+  try {
+    const res = await fetch(OLLAMA_URL.replace(/\/api\/generate\/?$/, "/api/tags"));
+    const data = await res.json();
+    const models = Array.isArray(data.models) ? data.models.map((m: any) => m.name) : [];
+    return Response.json({ models });
+  } catch {
+    return Response.json({ models: [], error: "Ollama unreachable" });
+  }
+}
+
+// Endpoints that cannot work without a valid locales directory
+const NEEDS_PROJECT = new Set([
+  "/api/translate", "/api/translate-section", "/api/save", "/api/add-key",
+  "/api/verify-same", "/api/confirm-same", "/api/verify-section",
+  "/api/translate-suspicious", "/api/code-usage", "/api/add-missing-key",
+]);
+
+// ---------- Startup & server ----------
 // The frontend lives in dashboard.html + dashboard-client.tsx (React). Bun's fullstack server
 // bundles and serves them on the fly — no build step; React comes from this repo's node_modules.
+applyProject(resolve(process.argv[2] || process.cwd()));
+const DASHBOARD_PORT = CONFIG.port; // fixed for the process lifetime — changing it in settings requires a restart
+
 Bun.serve({
   port: DASHBOARD_PORT,
   idleTimeout: 0, // the /events SSE stream is idle between auto-fix updates; the default 10s timeout would sever it
@@ -1183,6 +1345,24 @@ Bun.serve({
     const url = new URL(req.url);
 
     try {
+      if (NEEDS_PROJECT.has(url.pathname) && !LOCALES_DIR) {
+        return Response.json({ error: PROJECT_ERROR ?? "No project selected" }, { status: 400 });
+      }
+      if (req.method === "GET" && url.pathname === "/api/project") {
+        return Response.json(projectInfo());
+      }
+      if (req.method === "POST" && url.pathname === "/api/project") {
+        return await handleSetProject(req);
+      }
+      if (req.method === "POST" && url.pathname === "/api/config") {
+        return await handleSaveConfig(req);
+      }
+      if (req.method === "GET" && url.pathname === "/api/browse") {
+        return handleBrowse(url);
+      }
+      if (req.method === "GET" && url.pathname === "/api/ollama-models") {
+        return await handleOllamaModels();
+      }
       if (req.method === "GET" && url.pathname === "/api/data") {
         return Response.json(buildData());
       }
@@ -1253,7 +1433,11 @@ Bun.serve({
 });
 
 console.log(`\n🌍 i18n Dashboard: http://localhost:${DASHBOARD_PORT}`);
-console.log(`📁 Project root: ${PROJECT_ROOT}${existsSync(CONFIG_PATH) ? " (i18n-dash.config.json loaded)" : " (no config — defaults + auto-discovery)"}`);
-console.log(`📂 Locales dir: ${LOCALES_DIR} — ${listLocaleCodes().length} languages, source: ${SOURCE_LOCALE}`);
+if (LOCALES_DIR) {
+  console.log(`📁 Project root: ${PROJECT_ROOT}${existsSync(CONFIG_PATH) ? " (i18n-dash.config.json loaded)" : " (no config — defaults + auto-discovery)"}`);
+  console.log(`📂 Locales dir: ${LOCALES_DIR} — ${listLocaleCodes().length} languages, source: ${SOURCE_LOCALE}`);
+} else {
+  console.log(`📁 No usable project yet — open the dashboard and pick one from the UI.`);
+}
 console.log(`🤖 Ollama: ${OLLAMA_URL} | translator: ${MODEL} | judge: ${JUDGE_MODEL}\n`);
 autoFixLoop();

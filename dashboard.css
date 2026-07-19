@@ -426,6 +426,39 @@ textarea:focus, input[type=text]:focus {
 .empty-hint.cu-ok svg { display: none; }
 .modal-body .empty-hint { padding: 16px; }
 
+/* ---------- Project picker & settings ---------- */
+
+.project-chip { max-width: 200px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.project-chip-error { color: var(--bad-text); border-color: var(--bad-border); background: var(--bad-bg); }
+
+.proj-error {
+  background: var(--bad-bg); color: var(--bad-text); border: 1px solid var(--bad-border);
+  border-radius: var(--radius-sm); padding: 10px 12px; font-size: 12px; margin-bottom: 14px;
+}
+.proj-path {
+  font-family: ui-monospace, monospace; font-size: 11.5px; color: var(--muted);
+  padding: 6px 2px; word-break: break-all;
+}
+.proj-browser { max-height: 260px; overflow-y: auto; }
+.proj-row { cursor: pointer; transition: background 100ms ease; user-select: none; }
+.proj-row:hover { background: var(--panel2); }
+
+select {
+  background: var(--input-bg); color: var(--text); border: 1px solid var(--border);
+  border-radius: var(--radius-sm); padding: 8px 10px; font: inherit; width: 100%;
+}
+select:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px var(--ring); }
+
+.form-grid {
+  display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 12px;
+}
+.form-grid label, .form-block {
+  display: block; color: var(--muted); font-size: 11.5px; font-weight: 500;
+}
+.form-grid label input, .form-grid label select, .form-block textarea { margin-top: 5px; color: var(--text); }
+.form-block { margin-bottom: 12px; }
+.form-switch { display: flex; align-items: center; align-self: end; padding-bottom: 8px; }
+
 /* ---------- Motion preferences ---------- */
 
 @media (prefers-reduced-motion: reduce) {

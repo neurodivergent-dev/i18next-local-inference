@@ -85,7 +85,9 @@ If the locales directory can't be found automatically, the tool prints exactly w
 
 ## Step 5 — Configure (optional)
 
-Without any config, the tool auto-discovers the locales directory (`src/i18n/locales`, `locales`, `public/locales`, … or a limited-depth scan) and uses sensible defaults. To customize, create **`i18n-dash.config.json`** in the target project root (see [`i18n-dash.config.example.json`](i18n-dash.config.example.json) for a full example):
+**No terminal needed:** the topbar has a **project picker** (folder icon — recents + folder browser) and a **settings panel** (gear icon — models from your installed Ollama list, paths, app description, ignore lists). Settings are written to the project's `i18n-dash.config.json` and applied immediately; if the tool starts without finding a project, the picker opens by itself.
+
+Everything below can also be done by hand. Without any config, the tool auto-discovers the locales directory (`src/i18n/locales`, `locales`, `public/locales`, … or a limited-depth scan) and uses sensible defaults. To customize, create **`i18n-dash.config.json`** in the target project root (see [`i18n-dash.config.example.json`](i18n-dash.config.example.json) for a full example):
 
 ```json
 {

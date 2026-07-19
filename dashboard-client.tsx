@@ -59,6 +59,32 @@ interface CodeUsage {
   unusedKeys: string[];
 }
 
+interface ProjectInfo {
+  projectRoot: string;
+  projectName: string;
+  localesDir: string | null;
+  error: string | null;
+  configPath: string;
+  configExists: boolean;
+  config: Record<string, any>;
+  port: number;
+  recents: string[];
+  restartRequired?: boolean;
+}
+
+interface BrowseDir {
+  name: string;
+  path: string;
+  isProject: boolean;
+}
+
+interface BrowseResult {
+  path: string;
+  parent: string | null;
+  dirs: BrowseDir[];
+  error?: string;
+}
+
 // ---------- API helpers ----------
 
 async function getJson<T>(path: string): Promise<T> {
@@ -166,6 +192,9 @@ function Topbar(props: {
   sweepBusy: boolean;
   sweepProgress: SectionProgress | null;
   onSweepSuspicious: () => void;
+  project: ProjectInfo | null;
+  onOpenProject: () => void;
+  onOpenSettings: () => void;
 }) {
   const { data, autoFix } = props;
 
@@ -224,6 +253,14 @@ function Topbar(props: {
         <span className="brand-mark">i18n</span>
         <h1>Dashboard</h1>
       </div>
+      <button
+        className={"btn-icon project-chip" + (props.project && !props.project.localesDir ? " project-chip-error" : "")}
+        onClick={props.onOpenProject}
+        title={props.project?.projectRoot || "Pick a project"}
+      >
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z" /></svg>
+        {props.project ? (props.project.localesDir ? props.project.projectName : "Pick a project") : "..."}
+      </button>
       <div id="stats">
         {data && (
           <>
@@ -276,6 +313,9 @@ function Topbar(props: {
         </button>
       )}
       <ThemeToggle />
+      <button className="icon-btn" onClick={props.onOpenSettings} title="Project settings (models, paths, prompts)">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z" /><circle cx="12" cy="12" r="3" /></svg>
+      </button>
       <button className="btn-icon" onClick={props.onOpenCodeUsage}>
         <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="m18 16 4-4-4-4" /><path d="m6 8-4 4 4 4" /><path d="m14.5 4-5 16" /></svg>
         Code Usage
@@ -639,6 +679,195 @@ function CodeUsageModal(props: { sourceLocale: string; onClose: () => void; onDa
   );
 }
 
+function ProjectModal(props: { project: ProjectInfo | null; onClose: () => void; onSwitched: (info: ProjectInfo) => void }) {
+  const [browse, setBrowse] = useState<BrowseResult | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(props.project?.error ?? null);
+
+  const nav = useCallback(async (path: string) => {
+    const res = await getJson<BrowseResult>("/api/browse?path=" + encodeURIComponent(path));
+    if (!res.error) setBrowse(res);
+  }, []);
+
+  useEffect(() => {
+    nav(props.project?.projectRoot || "");
+  }, [nav, props.project?.projectRoot]);
+
+  const open = async (path: string) => {
+    setBusy(true);
+    try {
+      const info = await postJson<ProjectInfo>("/api/project", { path });
+      props.onSwitched(info);
+      if (info.localesDir) props.onClose();
+      else setError(info.error);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="modal-overlay" onClick={(e) => { if (e.target === e.currentTarget) props.onClose(); }}>
+      <div className="modal-card">
+        <div className="modal-header">
+          <h2>Open Project</h2>
+          <button className="modal-close" onClick={props.onClose}>✕</button>
+        </div>
+        <div className="modal-body">
+          {error && <div className="proj-error">{error}</div>}
+
+          {(props.project?.recents?.length ?? 0) > 0 && (
+            <>
+              <div className="cu-section-title">Recent projects</div>
+              <div className="cu-list">
+                {props.project!.recents.map((p) => (
+                  <div className="cu-row cu-row-flex proj-row" key={p} onClick={() => open(p)}>
+                    <span className="cu-key">{p}</span>
+                    <button className="add-missing-btn" disabled={busy}>Open</button>
+                  </div>
+                ))}
+              </div>
+            </>
+          )}
+
+          <div className="cu-section-title">Browse folders</div>
+          <div className="proj-path">{browse?.path || "Computer"}</div>
+          <div className="cu-list proj-browser">
+            {browse?.parent !== null && browse !== null && (
+              <div className="cu-row proj-row" onClick={() => nav(browse.parent || "")}>.. (up)</div>
+            )}
+            {browse?.dirs.map((d) => (
+              <div className="cu-row cu-row-flex proj-row" key={d.path} onClick={() => nav(d.path)}>
+                <span className="cu-key">{d.isProject ? "📦 " : "📁 "}{d.name}</span>
+              </div>
+            ))}
+          </div>
+          <button className="primary" disabled={busy || !browse?.path} onClick={() => open(browse!.path)}>
+            {busy ? "Opening..." : "Use this folder as the project"}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function SettingsModal(props: { project: ProjectInfo; onClose: () => void; onSaved: (info: ProjectInfo) => void }) {
+  const cfg = props.project.config;
+  const [models, setModels] = useState<string[]>([]);
+  const [busy, setBusy] = useState(false);
+  const [form, setForm] = useState({
+    localesDir: cfg.localesDir ?? "",
+    srcDir: cfg.srcDir ?? "",
+    sourceLocale: cfg.sourceLocale ?? "en",
+    ollamaUrl: cfg.ollamaUrl ?? "",
+    model: cfg.model ?? "",
+    judgeModel: cfg.judgeModel ?? "",
+    appContext: cfg.appContext ?? "",
+    autoVerify: cfg.autoVerify !== false,
+    port: cfg.port ?? props.project.port,
+    ignoreSameValues: (cfg.ignoreSameValues ?? []).join(", "),
+    ignoreSameKeyPrefixes: (cfg.ignoreSameKeyPrefixes ?? []).join("\n"),
+    dynamicPrefixes: (cfg.dynamicPrefixes ?? []).join("\n"),
+  });
+
+  useEffect(() => {
+    getJson<{ models: string[] }>("/api/ollama-models").then((r) => setModels(r.models ?? []));
+  }, []);
+
+  const set = (k: string, v: any) => setForm((f) => ({ ...f, [k]: v }));
+
+  const save = async () => {
+    setBusy(true);
+    try {
+      const payload = {
+        localesDir: form.localesDir.trim(),
+        srcDir: form.srcDir.trim(),
+        sourceLocale: form.sourceLocale.trim() || "en",
+        ollamaUrl: form.ollamaUrl.trim(),
+        model: form.model.trim(),
+        judgeModel: form.judgeModel.trim(),
+        appContext: form.appContext.trim(),
+        autoVerify: form.autoVerify,
+        port: Number(form.port) || props.project.port,
+        ignoreSameValues: form.ignoreSameValues.split(",").map((s: string) => s.trim()).filter(Boolean),
+        ignoreSameKeyPrefixes: form.ignoreSameKeyPrefixes.split("\n").map((s: string) => s.trim()).filter(Boolean),
+        dynamicPrefixes: form.dynamicPrefixes.split("\n").map((s: string) => s.trim()).filter(Boolean),
+      };
+      const info = await postJson<ProjectInfo>("/api/config", payload);
+      if (info.restartRequired) alert("Port change saved — restart the tool for it to take effect.");
+      props.onSaved(info);
+      props.onClose();
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const modelOptions = (current: string) =>
+    [...new Set([current, ...models])].filter(Boolean).map((m) => <option key={m} value={m}>{m}</option>);
+
+  return (
+    <div className="modal-overlay" onClick={(e) => { if (e.target === e.currentTarget) props.onClose(); }}>
+      <div className="modal-card">
+        <div className="modal-header">
+          <h2>Project Settings</h2>
+          <button className="modal-close" onClick={props.onClose}>✕</button>
+        </div>
+        <div className="modal-body">
+          <div className="cu-hint" style={{ margin: "0 0 12px" }}>
+            Saved to {props.project.configPath} and applied immediately (except the port).
+          </div>
+          <div className="form-grid">
+            <label>Locales folder
+              <input type="text" value={form.localesDir} placeholder="auto-discover" onChange={(e) => set("localesDir", e.target.value)} />
+            </label>
+            <label>Source code folder
+              <input type="text" value={form.srcDir} placeholder="src (or project root)" onChange={(e) => set("srcDir", e.target.value)} />
+            </label>
+            <label>Source language
+              <input type="text" value={form.sourceLocale} onChange={(e) => set("sourceLocale", e.target.value)} />
+            </label>
+            <label>Port
+              <input type="text" value={form.port} onChange={(e) => set("port", e.target.value)} />
+            </label>
+            <label>Translator model (fast workhorse)
+              {models.length > 0
+                ? <select value={form.model} onChange={(e) => set("model", e.target.value)}>{modelOptions(form.model)}</select>
+                : <input type="text" value={form.model} onChange={(e) => set("model", e.target.value)} />}
+            </label>
+            <label>Judge model (smart verifier)
+              {models.length > 0
+                ? <select value={form.judgeModel} onChange={(e) => set("judgeModel", e.target.value)}>{modelOptions(form.judgeModel)}</select>
+                : <input type="text" value={form.judgeModel} onChange={(e) => set("judgeModel", e.target.value)} />}
+            </label>
+            <label>Ollama URL
+              <input type="text" value={form.ollamaUrl} onChange={(e) => set("ollamaUrl", e.target.value)} />
+            </label>
+            <label className="switch-label form-switch">
+              <span className="switch">
+                <input type="checkbox" checked={form.autoVerify} onChange={(e) => set("autoVerify", e.target.checked)} />
+                <span className="track" />
+              </span>
+              Auto-verify "same" cells in the background
+            </label>
+          </div>
+          <label className="form-block">App description for the AI (improves translation quality)
+            <textarea rows={2} value={form.appContext} onChange={(e) => set("appContext", e.target.value)} />
+          </label>
+          <label className="form-block">Values allowed to stay identical in every language (comma separated)
+            <textarea rows={2} value={form.ignoreSameValues} onChange={(e) => set("ignoreSameValues", e.target.value)} />
+          </label>
+          <label className="form-block">Key prefixes exempt from the "same" check (one per line)
+            <textarea rows={3} value={form.ignoreSameKeyPrefixes} onChange={(e) => set("ignoreSameKeyPrefixes", e.target.value)} />
+          </label>
+          <label className="form-block">Dynamic key prefixes used via t(variable) (one per line)
+            <textarea rows={2} value={form.dynamicPrefixes} onChange={(e) => set("dynamicPrefixes", e.target.value)} />
+          </label>
+          <button className="primary" disabled={busy} onClick={save}>{busy ? "Saving..." : "Save Settings"}</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ---------- App ----------
 
 function App() {
@@ -731,6 +960,23 @@ function App() {
 
   const [sweepBusy, setSweepBusy] = useState(false);
   const [sweepProgress, setSweepProgress] = useState<SectionProgress | null>(null);
+  const [project, setProject] = useState<ProjectInfo | null>(null);
+  const [projectOpen, setProjectOpen] = useState(false);
+  const [settingsOpen, setSettingsOpen] = useState(false);
+
+  useEffect(() => {
+    getJson<ProjectInfo>("/api/project").then((p) => {
+      setProject(p);
+      if (!p.localesDir) setProjectOpen(true); // fresh launch with no project: open the picker
+    });
+  }, []);
+
+  const onProjectChanged = useCallback(async (info: ProjectInfo) => {
+    setProject(info);
+    setCurrentSection(null);
+    setCurrentKey(null);
+    await loadData();
+  }, [loadData]);
 
   const sweepSuspicious = useCallback(async () => {
     setSweepBusy(true);
@@ -783,6 +1029,9 @@ function App() {
         sweepBusy={sweepBusy}
         sweepProgress={sweepProgress}
         onSweepSuspicious={sweepSuspicious}
+        project={project}
+        onOpenProject={() => setProjectOpen(true)}
+        onOpenSettings={() => setSettingsOpen(true)}
       />
       <div id="layout">
         {data ? (
@@ -845,6 +1094,20 @@ function App() {
           sourceLocale={data.sourceLocale}
           onClose={() => setCodeUsageOpen(false)}
           onDataChanged={loadData}
+        />
+      )}
+      {projectOpen && (
+        <ProjectModal
+          project={project}
+          onClose={() => setProjectOpen(false)}
+          onSwitched={onProjectChanged}
+        />
+      )}
+      {settingsOpen && project && (
+        <SettingsModal
+          project={project}
+          onClose={() => setSettingsOpen(false)}
+          onSaved={onProjectChanged}
         />
       )}
     </>

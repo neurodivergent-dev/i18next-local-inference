@@ -32,7 +32,7 @@ An automated i18n management system that:
    ```
 3. Open **http://localhost:5960** — Auto-Fix is on by default and starts filling missing translations immediately.
 
-Optional: create `i18n-dash.config.json` in your project root to customize directories, models, port, and prompts — see [TUTORIAL.md](TUTORIAL.md#step-5--configure-optional) and [`i18n-dash.config.example.json`](i18n-dash.config.example.json).
+No terminal needed after launch: switch projects from the topbar **project picker** and edit models/paths/prompts in the **settings panel** (gear icon) — changes are saved to the project's `i18n-dash.config.json` and applied immediately. Manual config also works — see [TUTORIAL.md](TUTORIAL.md#step-5--configure-optional) and [`i18n-dash.config.example.json`](i18n-dash.config.example.json).
 
 ---
 
