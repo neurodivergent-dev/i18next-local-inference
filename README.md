@@ -82,12 +82,12 @@ AI performs two-stage validation for these keys:
 └─────────────────────────────────────────────────────┘
 ```
 
-### Frontend (Single HTML File)
+### Frontend (React)
 
-The dashboard is a single HTML file with no framework:
-- Vanilla JavaScript
-- Minified CSS (~50KB, cached in browser)
-- Listens only on port **5960**
+The dashboard is a React app served by Bun's fullstack server — no build step:
+- `dashboard.html` (shell) + `dashboard-client.tsx` (React components) + `dashboard.css`
+- Bun bundles and transpiles them on the fly when the page is requested
+- Listens on port **5960** by default (configurable)
 
 ### Data Flow
 
@@ -137,9 +137,12 @@ Response streams in **ndjson** format.
 
 ```
 i18n-dash/
-├── i18n-dashboard.tsx              # The whole tool (backend + frontend, single file)
+├── i18n-dashboard.tsx              # Backend: config, discovery, Ollama calls, API, server
+├── dashboard.html                  # Frontend shell (loads the React client)
+├── dashboard-client.tsx            # Frontend: React components
+├── dashboard.css                   # Frontend styles
 ├── i18n-dash.config.example.json   # Example config for target projects
-├── package.json                    # bin entry → runnable via bunx
+├── package.json                    # react/react-dom deps + bin entry
 ├── README.md                       # This file
 └── .gitignore
 
@@ -264,7 +267,7 @@ For issues or inquiries: [github.com/Melih/mindhouse](https://github.com/Melih/m
 
 1. **Do not modify source language (en.json)** files manually — the dashboard auto-updates them
 2. Unless you manually edit target language files, API calls will auto-save changes
-3. The dashboard runs in the browser and serves the backend (both sides are in one file)
+3. One process serves both the API and the React dashboard (Bun fullstack server)
 4. **Auto-Fix** remains active — click the button in the top-right to pause it
 
 ---

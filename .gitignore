@@ -1,6 +1,8 @@
-# i18n Dashboard state (cache + AI onayları) — hedef repoda .i18n-dash/ altında tutulur
+node_modules/
+
+# i18n Dashboard state (cache + AI approvals) — kept under .i18n-dash/ in the target repo
 .i18n-dash/
 
-# Eski sürümlerin state konumu (geriye dönük okunur)
+# Legacy state location of older versions (still read for backward compatibility)
 scripts/.i18n-confirmed-same.json
 scripts/.i18n-translation-cache.json

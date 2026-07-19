@@ -48,6 +48,8 @@ No custom model creation is needed — the translation system prompt is sent per
 
 ```bash
 git clone https://github.com/neurodivergent-dev/i18next-local-inference.git
+cd i18next-local-inference
+bun install   # installs react/react-dom for the dashboard UI
 ```
 
 ---

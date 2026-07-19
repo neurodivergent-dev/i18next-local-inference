@@ -1,13 +1,21 @@
 {
   "name": "i18n-dash",
-  "version": "1.0.0",
-  "description": "Ollama destekli, tak-çalıştır i18n çeviri dashboard'u — eksik çevirileri otomatik doldurur",
+  "version": "2.0.0",
+  "description": "Plug-and-play i18n translation dashboard powered by local Ollama models — auto-fills missing translations in any repo",
   "type": "module",
   "bin": {
     "i18n-dash": "./i18n-dashboard.tsx"
   },
   "scripts": {
     "i18n:dashboard": "bun run i18n-dashboard.tsx"
+  },
+  "dependencies": {
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0"
+  },
+  "devDependencies": {
+    "@types/react": "^19.0.0",
+    "@types/react-dom": "^19.0.0"
   },
   "license": "Apache-2.0"
 }
