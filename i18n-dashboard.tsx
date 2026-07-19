@@ -31,7 +31,7 @@ function loadConfig(): Config {
   try {
     return { ...DEFAULT_CONFIG, ...JSON.parse(readFileSync(CONFIG_PATH, "utf-8")) };
   } catch (err) {
-    console.error(`❌ ${CONFIG_PATH} geçersiz JSON:`, err);
+    console.error(`❌ ${CONFIG_PATH} is not valid JSON:`, err);
     process.exit(1);
   }
 }
@@ -103,8 +103,8 @@ function resolveLocalesDir(): string {
     const full = resolve(PROJECT_ROOT, CONFIG.localesDir);
     if (!isLocaleDir(full)) {
       console.error(
-        `❌ Config'deki localesDir geçersiz: ${full}\n` +
-        `   Dizin, ${SOURCE_LOCALE}.json + en az bir hedef dil .json'ı içermeli.`
+        `❌ localesDir from config is invalid: ${full}\n` +
+        `   The directory must contain ${SOURCE_LOCALE}.json plus at least one target-language .json file.`
       );
       process.exit(1);
     }
@@ -113,13 +113,13 @@ function resolveLocalesDir(): string {
   const found = discoverLocalesDir();
   if (!found) {
     console.error(
-      `❌ Locale dizini bulunamadı: ${PROJECT_ROOT} altında "${SOURCE_LOCALE}.json + diğer dil .json'ları" içeren bir dizin yok.\n` +
-      `   Çözüm: proje köküne i18n-dash.config.json ekleyip yolu belirtin, örn:\n` +
+      `❌ Locales directory not found: nothing under ${PROJECT_ROOT} contains "${SOURCE_LOCALE}.json + other language .json files".\n` +
+      `   Fix: create i18n-dash.config.json in the project root and set the path, e.g.:\n` +
       `   { "localesDir": "src/i18n/locales" }`
     );
     process.exit(1);
   }
-  console.log(`🔎 Locale dizini otomatik bulundu: ${found}`);
+  console.log(`🔎 Locales directory auto-discovered: ${found}`);
   return found;
 }
 
@@ -165,8 +165,8 @@ function loadStateFile(path: string): any | null {
   return null;
 }
 
-process.on("uncaughtException", (err) => console.error("❌ Yakalanmamış hata (süreç devam ediyor):", err));
-process.on("unhandledRejection", (err) => console.error("❌ Yakalanmamış promise reddi (süreç devam ediyor):", err));
+process.on("uncaughtException", (err) => console.error("❌ Uncaught exception (process keeps running):", err));
+process.on("unhandledRejection", (err) => console.error("❌ Unhandled promise rejection (process keeps running):", err));
 
 const LANGUAGE_NAMES: Record<string, { native: string; english: string }> = {
   tr: { native: "Türkçe", english: "Turkish" },
@@ -776,7 +776,7 @@ async function autoFixLoop() {
       autoFixStatus.lastScanAt = new Date().toISOString();
       broadcastAutoFix();
     } catch (err) {
-      console.error("❌ Otomatik onarım turu hata verdi (devam ediyor):", err);
+      console.error("❌ Auto-fix pass failed (continuing):", err);
     }
     await sleep(AUTO_FIX_POLL_MS);
   }
@@ -2052,7 +2052,7 @@ Bun.serve({
 });
 
 console.log(`\n🌍 i18n Dashboard: http://localhost:${DASHBOARD_PORT}`);
-console.log(`📁 Proje kökü: ${PROJECT_ROOT}${existsSync(CONFIG_PATH) ? " (i18n-dash.config.json okundu)" : " (config yok, varsayılanlar + otomatik keşif)"}`);
-console.log(`📂 Locale dizini: ${LOCALES_DIR} — ${listLocaleCodes().length} dil, kaynak: ${SOURCE_LOCALE}`);
-console.log(`🤖 Ollama: ${OLLAMA_URL} | çeviri: ${MODEL} | yargıç: ${JUDGE_MODEL}\n`);
+console.log(`📁 Project root: ${PROJECT_ROOT}${existsSync(CONFIG_PATH) ? " (i18n-dash.config.json loaded)" : " (no config — defaults + auto-discovery)"}`);
+console.log(`📂 Locales dir: ${LOCALES_DIR} — ${listLocaleCodes().length} languages, source: ${SOURCE_LOCALE}`);
+console.log(`🤖 Ollama: ${OLLAMA_URL} | translator: ${MODEL} | judge: ${JUDGE_MODEL}\n`);
 autoFixLoop();

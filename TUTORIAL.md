@@ -66,12 +66,12 @@ bun run i18n-dashboard.tsx path/to/your-project
 On first launch the tool tells you exactly what it found:
 
 ```
-🔎 Locale dizini otomatik bulundu: /path/to/your-project/locales
+🔎 Locales directory auto-discovered: /path/to/your-project/locales
 
 🌍 i18n Dashboard: http://localhost:5960
-📁 Proje kökü: /path/to/your-project (config yok, varsayılanlar + otomatik keşif)
-📂 Locale dizini: /path/to/your-project/locales — 30 dil, kaynak: en
-🤖 Ollama: http://localhost:11434/api/generate | çeviri: gemma4:26b | yargıç: gemma4:26b
+📁 Project root: /path/to/your-project (no config — defaults + auto-discovery)
+📂 Locales dir: /path/to/your-project/locales — 30 languages, source: en
+🤖 Ollama: http://localhost:11434/api/generate | translator: gemma4:26b | judge: gemma4:26b
 ```
 
 Open **http://localhost:5960** in your browser. That's it — **Auto-Fix is on by default**, so missing translations start filling in immediately, even if you never click anything.
@@ -139,7 +139,7 @@ The tool's own state (translation cache, confirmed-same decisions) lives in `.i1
 
 ## Troubleshooting
 
-- **"Locale dizini bulunamadı"** → add `i18n-dash.config.json` with `"localesDir"` pointing at your locale folder.
+- **"Locales directory not found"** → add `i18n-dash.config.json` with `"localesDir"` pointing at your locale folder.
 - **Translations fail (502)** → is Ollama running? `ollama list` / `ollama serve`, and check the model in your config is pulled.
 - **Port already in use** → set `"port"` in the config.
 - **Stale cache** → delete the `.i18n-dash/` directory in your project root.
