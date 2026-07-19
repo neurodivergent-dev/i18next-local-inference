@@ -1009,6 +1009,7 @@ function streamVerifySection(section: string): Response {
 // bundles and serves them on the fly — no build step; React comes from this repo's node_modules.
 Bun.serve({
   port: DASHBOARD_PORT,
+  idleTimeout: 0, // the /events SSE stream is idle between auto-fix updates; the default 10s timeout would sever it
   routes: { "/": dashboardPage },
   async fetch(req) {
     const url = new URL(req.url);

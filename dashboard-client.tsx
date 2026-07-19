@@ -139,11 +139,10 @@ function Topbar(props: {
 }) {
   const { data, autoFix } = props;
 
-  let stats = "";
+  let totalKeys = 0;
+  let totalCells = 0;
+  let okCells = 0;
   if (data) {
-    let totalKeys = 0;
-    let totalCells = 0;
-    let okCells = 0;
     for (const sec of data.sections) {
       totalKeys += sec.keyCount;
       for (const k of sec.keys) {
@@ -153,9 +152,8 @@ function Topbar(props: {
         }
       }
     }
-    const pct = totalCells ? Math.round((okCells / totalCells) * 1000) / 10 : 100;
-    stats = `${totalKeys} keys · ${okCells}/${totalCells} cells translated (${pct}%)`;
   }
+  const pct = totalCells ? Math.round((okCells / totalCells) * 1000) / 10 : 0;
 
   let pillClass = "autofix-pill";
   let pillContent: React.ReactNode = "Auto-fix: loading...";
@@ -182,19 +180,40 @@ function Topbar(props: {
 
   return (
     <div id="topbar">
-      <h1>i18n Dashboard</h1>
-      <div id="stats">{stats}</div>
+      <div className="brand">
+        <span className="brand-mark">i18n</span>
+        <h1>Dashboard</h1>
+      </div>
+      <div id="stats">
+        {data && (
+          <>
+            <span className="stat-chip"><strong>{totalKeys}</strong>&nbsp;keys</span>
+            <span className="stat-chip">
+              <span className="stat-mini-bar"><div style={{ width: pct + "%" }} /></span>
+              <strong>{pct}%</strong>&nbsp;· {okCells}/{totalCells}
+            </span>
+          </>
+        )}
+      </div>
       <div className={pillClass}>{pillContent}</div>
       <div className="spacer" />
       <div className="search-wrap">
         <svg className="search-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="11" cy="11" r="8" /><path d="m21 21-4.3-4.3" /></svg>
         <input id="search" type="text" placeholder="Search key or text..." value={props.search} onChange={(e) => props.onSearch(e.target.value)} />
       </div>
-      <label className="chk">
-        <input type="checkbox" checked={props.overwrite} onChange={(e) => props.onOverwrite(e.target.checked)} /> Also overwrite existing
+      <label className="switch-label">
+        <span className="switch">
+          <input type="checkbox" checked={props.overwrite} onChange={(e) => props.onOverwrite(e.target.checked)} />
+          <span className="track" />
+        </span>
+        Overwrite existing
       </label>
-      <label className="chk">
-        <input type="checkbox" checked={autoFix?.enabled ?? true} onChange={(e) => props.onToggleAutoFix(e.target.checked)} /> Auto-fix
+      <label className="switch-label">
+        <span className="switch">
+          <input type="checkbox" checked={autoFix?.enabled ?? true} onChange={(e) => props.onToggleAutoFix(e.target.checked)} />
+          <span className="track" />
+        </span>
+        Auto-fix
       </label>
       <button className="btn-icon" onClick={props.onOpenCodeUsage}>
         <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="m18 16 4-4-4-4" /><path d="m6 8-4 4 4 4" /><path d="m14.5 4-5 16" /></svg>
@@ -211,18 +230,28 @@ function Topbar(props: {
 function Sidebar(props: { data: Data; currentSection: string | null; onSelect: (name: string) => void }) {
   return (
     <div id="sidebar">
-      {props.data.sections.map((sec) => (
-        <div
-          key={sec.name}
-          className={"sec-item" + (sec.name === props.currentSection ? " active" : "")}
-          onClick={() => props.onSelect(sec.name)}
-        >
-          <span className="sec-name">{sec.name}</span>
-          <span className={"sec-badge " + (sec.missingCount > 0 ? "bad" : "good")}>
-            {sec.missingCount}/{sec.keyCount * props.data.targetLocales.length}
-          </span>
-        </div>
-      ))}
+      {props.data.sections.map((sec) => {
+        const cells = sec.keyCount * props.data.targetLocales.length;
+        const pct = cells ? Math.round(((cells - sec.missingCount) / cells) * 100) : 100;
+        return (
+          <div
+            key={sec.name}
+            className={"sec-item" + (sec.name === props.currentSection ? " active" : "")}
+            onClick={() => props.onSelect(sec.name)}
+            title={`${sec.missingCount} of ${cells} cells need attention`}
+          >
+            <div className="sec-row">
+              <span className="sec-name">{sec.name}</span>
+              <span className={"sec-badge " + (sec.missingCount > 0 ? "bad" : "good")}>
+                {sec.missingCount > 0 ? sec.missingCount : "✓"}
+              </span>
+            </div>
+            <div className="sec-progress">
+              <div className={pct === 100 ? "full" : undefined} style={{ width: pct + "%" }} />
+            </div>
+          </div>
+        );
+      })}
     </div>
   );
 }
@@ -325,7 +354,10 @@ function KeyList(props: {
           className={"key-item" + (k.key === props.currentKey ? " active" : "")}
           onClick={() => props.onSelectKey(k.key)}
         >
-          <span className={"dot " + overallStatus(k)} />
+          <span
+            className={"dot " + overallStatus(k)}
+            title={{ ok: "Complete", warn: "Has same-as-source cells", bad: "Has missing or empty cells" }[overallStatus(k)]}
+          />
           <div style={{ overflow: "hidden" }}>
             <div className="kname">{k.key.split(".").slice(1).join(".") || k.key}</div>
             {term ? <div className="ksection">{k.key.split(".")[0]}</div> : null}
@@ -351,7 +383,14 @@ function Detail(props: {
   const [verifyingLocale, setVerifyingLocale] = useState<string | null>(null);
 
   if (!props.currentKey) {
-    return <div id="detail"><div className="empty-hint">Select a section on the left, then a key.</div></div>;
+    return (
+      <div id="detail">
+        <div className="empty-hint">
+          <svg width="36" height="36" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="m5 8 6 6" /><path d="m4 14 6-6 2-3" /><path d="M2 5h12" /><path d="M7 2h1" /><path d="m22 22-5-10-5 10" /><path d="M14 18h6" /></svg>
+          Select a section on the left, then a key.
+        </div>
+      </div>
+    );
   }
 
   let row: KeyRow | null = null;
@@ -412,7 +451,7 @@ function Detail(props: {
               defaultValue={toDisplayValue(cell.value)}
               onBlur={(e) => props.onSave(props.currentKey!, code, fromDisplayValue(e.target.value, isArrayKey))}
             />
-            <div className={pillClass}>{statusLabel(cell.status, cell.confidence)}</div>
+            <div className={pillClass}><span className="pill-dot" />{statusLabel(cell.status, cell.confidence)}</div>
             <button
               disabled={busyLocale === code}
               onClick={async () => {
