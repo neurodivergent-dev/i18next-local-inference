@@ -331,7 +331,7 @@ textarea:focus, input[type=text]:focus {
 .src-box .lbl { color: var(--muted); font-size: 10.5px; font-weight: 600; margin-bottom: 8px; text-transform: uppercase; letter-spacing: 0.06em; }
 
 .lang-row {
-  display: grid; grid-template-columns: 140px 1fr 118px 64px 76px; gap: 10px; align-items: start;
+  display: grid; grid-template-columns: 140px 1fr 118px 92px 84px; gap: 10px; align-items: start;
   padding: 12px 8px; margin: 0 -8px; border-bottom: 1px solid var(--row-border);
   border-radius: var(--radius-sm);
   transition: background 120ms ease;
@@ -356,9 +356,13 @@ textarea:focus, input[type=text]:focus {
 .status-pill.suspicious { background: var(--bad-bg); color: var(--bad-text); border-color: var(--bad-border); cursor: help; }
 .status-pill.ok { background: var(--ok-bg); color: var(--ok-text); border-color: var(--ok-border); }
 
-.verify-one-btn { font-size: 10.5px; padding: 5px 8px; }
-.lang-actions { display: flex; flex-direction: column; gap: 4px; }
-.confirm-same-btn { font-size: 10.5px; padding: 5px 8px; }
+.translate-one-btn {
+  width: 100%; padding: 6px 4px; font-size: 11.5px;
+  text-align: center; justify-content: center; margin-top: 3px;
+}
+.verify-one-btn { font-size: 10.5px; padding: 5px 8px; width: 100%; }
+.lang-actions { display: flex; flex-direction: column; gap: 4px; margin-top: 3px; }
+.confirm-same-btn { font-size: 10.5px; padding: 5px 8px; width: 100%; }
 
 /* ---------- Section progress (streaming ops) ---------- */
 

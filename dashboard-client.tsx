@@ -514,6 +514,7 @@ function Detail(props: {
             />
             <div className={pillClass} title={cell.reason}><span className="pill-dot" />{statusLabel(cell.status, cell.confidence)}</div>
             <button
+              className="translate-one-btn"
               disabled={busyLocale === code}
               onClick={async () => {
                 setBusyLocale(code);
