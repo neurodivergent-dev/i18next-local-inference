@@ -1109,6 +1109,69 @@ function streamVerifySection(section: string): Response {
   });
 }
 
+// ---------- Sweep suspicious cells: translate everything the judge flagged, in one click ----------
+// The judge (smart model) said these are forgotten translations; the workhorse (fast model)
+// overwrites them with real translations. One Ollama call per key covers all its flagged locales.
+// A successfully translated cell loses its flag; a cell the model keeps identical to the source
+// stays flagged (nothing changed, so the verdict still stands).
+function streamTranslateSuspicious(): Response {
+  const encoder = new TextEncoder();
+  const stream = new ReadableStream({
+    async start(controller) {
+      const send = (obj: any) => controller.enqueue(encoder.encode(JSON.stringify(obj) + "\n"));
+      try {
+        const en = loadLocale(SOURCE_LOCALE);
+        const flagged = loadFlaggedSuspicious();
+
+        const work: { key: string; sourceValue: string; locales: string[] }[] = [];
+        for (const [key, locs] of Object.entries(flagged)) {
+          const sourceValue = getPath(en, key);
+          if (typeof sourceValue !== "string") continue;
+          // stale flags (cell no longer identical to the source) are skipped
+          const locales = Object.keys(locs).filter((c) => getPath(loadLocale(c), key) === sourceValue);
+          if (locales.length > 0) work.push({ key, sourceValue, locales });
+        }
+        const totalCells = work.reduce((sum, w) => sum + w.locales.length, 0);
+        send({ type: "start", total: work.length, totalCells });
+
+        let cellsApplied = 0;
+        let cellsUnchanged = 0;
+        let cellsFailed = 0;
+        for (const w of work) {
+          const translations = await translateKey(w.sourceValue, w.key, w.locales);
+          const applied: Record<string, string | string[]> = {};
+          for (const c of w.locales) {
+            const accepted = translations ? acceptTranslatedValue(w.sourceValue, translations[c]) : undefined;
+            if (accepted === undefined) {
+              cellsFailed++;
+              continue;
+            }
+            if (accepted === w.sourceValue) {
+              cellsUnchanged++;
+              continue;
+            }
+            const data = loadLocale(c);
+            setPath(data, w.key, accepted);
+            saveLocale(c, data);
+            unflagSuspicious(w.key, c);
+            applied[c] = accepted;
+            cellsApplied++;
+          }
+          send({ type: "key", key: w.key, attempted: w.locales.length, translations: applied });
+        }
+        send({ type: "done", cellsApplied, cellsUnchanged, cellsFailed });
+      } catch (err: any) {
+        send({ type: "error", message: String(err?.message ?? err) });
+      } finally {
+        controller.close();
+      }
+    },
+  });
+  return new Response(stream, {
+    headers: { "Content-Type": "application/x-ndjson; charset=utf-8", "Cache-Control": "no-cache" },
+  });
+}
+
 // ---------- Server ----------
 // The frontend lives in dashboard.html + dashboard-client.tsx (React). Bun's fullstack server
 // bundles and serves them on the fly — no build step; React comes from this repo's node_modules.
@@ -1145,6 +1208,9 @@ Bun.serve({
       if (req.method === "POST" && url.pathname === "/api/verify-section") {
         const body = await req.json();
         return streamVerifySection(body.section);
+      }
+      if (req.method === "POST" && url.pathname === "/api/translate-suspicious") {
+        return streamTranslateSuspicious();
       }
       if (req.method === "GET" && url.pathname === "/api/auto-fix") {
         return Response.json(autoFixStatus);

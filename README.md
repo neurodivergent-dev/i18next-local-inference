@@ -112,6 +112,7 @@ User → t('key') → en.json missing/empty → API call
 Two background phases run continuously (each has its own toggle in the top bar):
 - **Auto-fix**: fills missing/empty cells with the fast translation model — no user action needed
 - **Auto-verify**: the judge model works through cells identical to the source; real cognates are auto-confirmed, probable forgotten translations are flagged `suspicious` with the judge's reason. Each pair is judged once and the verdict is remembered.
+- **Fix Suspicious**: one topbar click sends everything the judge flagged to the fast translator and overwrites the leftover source text with real translations.
 
 ### ✅ Quality Control
 

@@ -163,12 +163,16 @@ function Topbar(props: {
   onToggleAutoVerify: (enabled: boolean) => void;
   onOpenCodeUsage: () => void;
   onRefresh: () => void;
+  sweepBusy: boolean;
+  sweepProgress: SectionProgress | null;
+  onSweepSuspicious: () => void;
 }) {
   const { data, autoFix } = props;
 
   let totalKeys = 0;
   let totalCells = 0;
   let okCells = 0;
+  let suspiciousCells = 0;
   if (data) {
     for (const sec of data.sections) {
       totalKeys += sec.keyCount;
@@ -176,6 +180,7 @@ function Topbar(props: {
         for (const v of Object.values(k.values)) {
           totalCells++;
           if (v.status === "ok") okCells++;
+          if (v.status === "suspicious") suspiciousCells++;
         }
       }
     }
@@ -257,6 +262,19 @@ function Topbar(props: {
         </span>
         Auto-verify
       </label>
+      {(suspiciousCells > 0 || props.sweepBusy) && (
+        <button
+          className="btn-icon btn-suspicious"
+          disabled={props.sweepBusy}
+          onClick={props.onSweepSuspicious}
+          title="Translate every cell the judge flagged as a forgotten translation"
+        >
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="m9.06 11.9 8.07-8.06a2.85 2.85 0 1 1 4.03 4.03l-8.06 8.08" /><path d="M7.07 14.94c-1.66 0-3 1.35-3 3.02 0 1.33-2.5 1.52-2 2.02 1.08 1.1 2.49 2.02 4 2.02 2.2 0 4-1.8 4-4.04a3.01 3.01 0 0 0-3-3.02z" /></svg>
+          {props.sweepBusy && props.sweepProgress
+            ? `Sweeping ${props.sweepProgress.done}/${props.sweepProgress.total}`
+            : `Fix Suspicious (${suspiciousCells})`}
+        </button>
+      )}
       <ThemeToggle />
       <button className="btn-icon" onClick={props.onOpenCodeUsage}>
         <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="m18 16 4-4-4-4" /><path d="m6 8-4 4 4 4" /><path d="m14.5 4-5 16" /></svg>
@@ -710,6 +728,34 @@ function App() {
     await loadData();
   }, [loadData]);
 
+  const [sweepBusy, setSweepBusy] = useState(false);
+  const [sweepProgress, setSweepProgress] = useState<SectionProgress | null>(null);
+
+  const sweepSuspicious = useCallback(async () => {
+    setSweepBusy(true);
+    let total = 0;
+    let done = 0;
+    try {
+      await streamNdjson("/api/translate-suspicious", {}, (msg) => {
+        if (msg.type === "start") {
+          total = msg.totalCells;
+          setSweepProgress({ done: 0, total });
+        } else if (msg.type === "key") {
+          done += msg.attempted;
+          setSweepProgress({ done, total });
+        } else if (msg.type === "error") {
+          alert("Error: " + msg.message);
+        } else if (msg.type === "done") {
+          alert(`Suspicious sweep finished: ${msg.cellsApplied} cells translated, ${msg.cellsUnchanged} left unchanged (the model kept the source text), ${msg.cellsFailed} failed.`);
+        }
+      });
+    } finally {
+      setSweepBusy(false);
+      setSweepProgress(null);
+    }
+    await loadData();
+  }, [loadData]);
+
   const addKey = useCallback(async (name: string, value: string) => {
     const fullKey = `${currentSection}.${name}`;
     const res = await postJson("/api/add-key", { key: fullKey, value });
@@ -733,6 +779,9 @@ function App() {
         onToggleAutoVerify={(enabled) => postJson("/api/auto-fix", { verifyEnabled: enabled })}
         onOpenCodeUsage={() => setCodeUsageOpen(true)}
         onRefresh={loadData}
+        sweepBusy={sweepBusy}
+        sweepProgress={sweepProgress}
+        onSweepSuspicious={sweepSuspicious}
       />
       <div id="layout">
         {data ? (

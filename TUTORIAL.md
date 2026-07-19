@@ -121,6 +121,7 @@ Without any config, the tool auto-discovers the locales directory (`src/i18n/loc
 - **The table** shows every key × every target language. Cell colors mean: `missing` (key absent), `empty` (present but blank), `same` (identical to source — maybe a forgotten translation), `ok`.
 - **Auto-fix** (top right) scans every 15 seconds and fills `missing`/`empty` cells on its own. Toggle it off if you want manual control.
 - **Auto-verify** (top right) runs after each auto-fix pass: the judge model works through unjudged `same` cells in the background — real cognates turn `ok`, probable forgotten translations turn `suspicious` (hover the pill to read the judge's reason). Each pair is judged once and remembered.
+- **Fix Suspicious (N)** appears in the topbar whenever flagged cells exist: one click sweeps them all with the fast translator, overwriting the leftover source text. Cells the model keeps identical stay flagged for human review.
 - **Per-key translate**: fill one key for all languages (or a selection) in a single AI call; optionally overwrite existing values.
 - **Per-section translate**: batch-translate an entire section with live streaming progress.
 - **AI Verify on `same` cells**: the judge model decides whether an identical string is a legitimate cognate/brand/term or a forgotten translation. You can also force-confirm — human decisions always win over the AI.

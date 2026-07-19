@@ -176,6 +176,8 @@ body {
 
 .btn-icon { display: inline-flex; align-items: center; gap: 7px; }
 .btn-icon svg { flex-shrink: 0; opacity: 0.8; }
+.btn-suspicious { color: var(--bad-text); border-color: var(--bad-border); background: var(--bad-bg); }
+.btn-suspicious:hover { background: var(--bad-bg); border-color: var(--bad-text); filter: brightness(1.1); }
 .icon-btn { display: inline-flex; align-items: center; padding: 7px 9px; }
 .icon-btn svg { opacity: 0.85; }
 
