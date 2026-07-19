@@ -965,10 +965,15 @@ function App() {
   const [settingsOpen, setSettingsOpen] = useState(false);
 
   useEffect(() => {
-    getJson<ProjectInfo>("/api/project").then((p) => {
-      setProject(p);
-      if (!p.localesDir) setProjectOpen(true); // fresh launch with no project: open the picker
-    });
+    getJson<ProjectInfo>("/api/project")
+      .then((p) => {
+        setProject(p);
+        if (!p.localesDir) setProjectOpen(true); // fresh launch with no project: open the picker
+      })
+      .catch(() => {
+        // Server predates the project API (version skew after an update) — a restart fixes it
+        console.error("GET /api/project failed — restart the i18n-dash server to match this UI version.");
+      });
   }, []);
 
   const onProjectChanged = useCallback(async (info: ProjectInfo) => {
@@ -1030,8 +1035,14 @@ function App() {
         sweepProgress={sweepProgress}
         onSweepSuspicious={sweepSuspicious}
         project={project}
-        onOpenProject={() => setProjectOpen(true)}
-        onOpenSettings={() => setSettingsOpen(true)}
+        onOpenProject={() => {
+          if (project) setProjectOpen(true);
+          else alert("Project info could not be loaded — restart the i18n-dash server (it is older than this page) and reload.");
+        }}
+        onOpenSettings={() => {
+          if (project) setSettingsOpen(true);
+          else alert("Project info could not be loaded — restart the i18n-dash server (it is older than this page) and reload.");
+        }}
       />
       <div id="layout">
         {data ? (
