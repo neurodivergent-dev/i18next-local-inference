@@ -1335,7 +1335,9 @@ const NEEDS_PROJECT = new Set([
 // The frontend lives in dashboard.html + dashboard-client.tsx (React). Bun's fullstack server
 // bundles and serves them on the fly — no build step; React comes from this repo's node_modules.
 applyProject(resolve(process.argv[2] || process.cwd()));
-const DASHBOARD_PORT = CONFIG.port; // fixed for the process lifetime — changing it in settings requires a restart
+// Fixed for the process lifetime — changing it in settings requires a restart.
+// I18N_DASH_PORT lets wrappers (e.g. a desktop shell that found a free port) override the config.
+const DASHBOARD_PORT = Number(process.env.I18N_DASH_PORT) || CONFIG.port;
 
 Bun.serve({
   port: DASHBOARD_PORT,
